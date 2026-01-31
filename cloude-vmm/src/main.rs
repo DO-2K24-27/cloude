@@ -20,6 +20,11 @@ fn main() {
         Err(e) => return eprintln!("Error getting KERNEL_PATH: {}", e),
     };
 
+    let initramfs_path = match env::var("INITRAMFS_PATH") {
+        Ok(val) => val,
+        Err(e) => return eprintln!("Error getting INITRAMFS_PATH: {}", e),
+    };
+
     let vcpus: u8 = 2;
     let memory: u32 = 1024; // in MiB
 
@@ -31,7 +36,7 @@ fn main() {
         }
     };
 
-    let vmm = match configure_vmm(vmm, vcpus, memory, &kernel_path) {
+    let vmm = match configure_vmm(vmm, vcpus, memory, &kernel_path, &initramfs_path) {
         Ok(vmm) => vmm,
         Err(e) => {
             eprintln!("Error configuring VMM: {:?}", e);
@@ -50,8 +55,8 @@ fn create_vmm() -> Result<VMM, Error> {
     Ok(vmm)
 }
 
-fn configure_vmm(mut vmm: VMM, vcpus: u8, memory: u32, kernel_path: &str) -> Result<VMM, Error> {
-    vmm.configure(vcpus, memory, kernel_path)
+fn configure_vmm(mut vmm: VMM, vcpus: u8, memory: u32, kernel_path: &str, initramfs_path: &str) -> Result<VMM, Error> {
+    vmm.configure(vcpus, memory, kernel_path, initramfs_path)
         .map_err(Error::VmmConfigure)?;
 
     Ok(vmm)
