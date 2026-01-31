@@ -20,7 +20,7 @@ fn main() -> Result<(), Error> {
 
     let kernel_path = env::var("KERNEL_PATH").map_err(Error::VmmKernel)?;
 
-    vmm.configure(2, 4, &kernel_path)
+    vmm.configure(4, 512, &kernel_path)
         .map_err(Error::VmmConfigure)?;
 
     vmm.run();
