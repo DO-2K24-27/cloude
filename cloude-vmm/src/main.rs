@@ -1,5 +1,4 @@
-use std::u32;
-use std::env;
+use std::{u32, u8, env};
 
 use vmm::VMM;
 
@@ -14,14 +13,51 @@ pub enum Error {
     VmmRun(vmm::Error),
 }
 
-fn main() -> Result<(), Error> {
+fn main() {
 
-    let mut vmm = VMM::new().map_err(Error::VmmNew)?;
+    let kernel_path = match env::var("KERNEL_PATH") {
+        Ok(val) => val,
+        Err(e) => return eprintln!("Error getting KERNEL_PATH: {}", e),
+    };
 
-    let kernel_path = env::var("KERNEL_PATH").map_err(Error::VmmKernel)?;
+    let vcpus: u8 = 2;
+    let memory: u32 = 1024; // in MiB
 
-    vmm.configure(4, 512, &kernel_path)
+    let vmm = match create_vmm() {
+        Ok(vmm) => vmm,
+        Err(e) => {
+            eprintln!("Error creating VMM: {:?}", e);
+            return;
+        }
+    };
+
+    let vmm = match configure_vmm(vmm, vcpus, memory, &kernel_path) {
+        Ok(vmm) => vmm,
+        Err(e) => {
+            eprintln!("Error configuring VMM: {:?}", e);
+            return;
+        }
+    };
+
+    if let Err(e) = start_vmm(vmm) {
+        eprintln!("Error running VMM: {:?}", e);
+    }
+}
+
+fn create_vmm() -> Result<VMM, Error> {
+    let vmm = VMM::new().map_err(Error::VmmNew)?;
+
+    Ok(vmm)
+}
+
+fn configure_vmm(mut vmm: VMM, vcpus: u8, memory: u32, kernel_path: &str) -> Result<VMM, Error> {
+    vmm.configure(vcpus, memory, kernel_path)
         .map_err(Error::VmmConfigure)?;
+
+    Ok(vmm)
+}
+
+fn start_vmm(mut vmm: VMM) -> Result<(), Error> {
 
     vmm.run();
 
