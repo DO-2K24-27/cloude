@@ -1,22 +1,36 @@
 use clap::Parser;
 
-/// Simple program to greet a person
+/// VM Configuration CLI
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    /// Name of the person to greet
-    #[arg(short, long)]
-    name: String,
+    /// Number of CPUs to allocate to the VM
+    #[arg(short = 'c', long)]
+    cpu: u8,
 
-    /// Number of times to greet
-    #[arg(short, long, default_value_t = 1)]
-    count: u8,
+    /// Amount of RAM in GB to allocate to the VM
+    #[arg(short = 'r', long)]
+    ram: u32,
+
+    /// Path to the kernel image file
+    #[arg(short = 'k', long)]
+    kernel: String,
+
+    /// Path to the initramfs image file
+    #[arg(short = 'i', long)]
+    initramfs: String,
+
+    /// Path to the disk image file
+    #[arg(short = 'f', long)]
+    file: String,
 }
 
 fn main() {
     let args = Args::parse();
 
-    for _ in 0..args.count {
-        println!("Hello {}!", args.name);
-    }
+    println!("CPU: {}", args.cpu);
+    println!("RAM: {} GB", args.ram);
+    println!("Kernel: {}", args.kernel);
+    println!("Initramfs: {}", args.initramfs);
+    println!("File: {}", args.file);
 }
