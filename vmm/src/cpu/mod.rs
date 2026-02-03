@@ -9,7 +9,7 @@ use kvm_bindings::{kvm_fpu, kvm_regs, CpuId};
 use kvm_ioctls::{VcpuExit, VcpuFd, VmFd};
 use vm_memory::{Address, Bytes, GuestAddress, GuestMemoryError, GuestMemoryMmap};
 
-use crate::devices::serial::{LumperSerial, SERIAL_PORT_BASE};
+use crate::devices::serial::{LumperSerial, SERIAL_PORT_BASE, SERIAL_PORT_LAST};
 
 pub(crate) mod cpuid;
 mod gdt;
@@ -228,6 +228,11 @@ impl Vcpu {
                 // This is a PIO write, i.e. the guest is trying to write
                 // something to an I/O port.
                 VcpuExit::IoOut(addr, data) => {
+                    // Check if the address is within the serial port range
+                    if addr < SERIAL_PORT_BASE || addr > SERIAL_PORT_LAST {
+                        return;
+                    }
+
                     self.serial
                         .lock()
                         .unwrap()
@@ -244,6 +249,11 @@ impl Vcpu {
                 // This is a PIO read, i.e. the guest is trying to read
                 // from an I/O port.
                 VcpuExit::IoIn(addr, data) => {
+                    // Check if the address is within the serial port range
+                    if addr < SERIAL_PORT_BASE || addr > SERIAL_PORT_LAST {
+                        return;
+                    }
+
                     data[0] = self.serial.lock().unwrap().serial.read(
                         (addr - SERIAL_PORT_BASE)
                             .try_into()

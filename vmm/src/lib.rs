@@ -200,9 +200,13 @@ impl VMM {
         loop {}
     }
 
-    pub fn configure(&mut self, num_vcpus: u8, mem_size_mb: u32, kernel_path: &str) -> Result<()> {
+    pub fn configure(&mut self, num_vcpus: u8, mem_size_mb: u32, kernel_path: &str, initramfs_path: &str) -> Result<()> {
         self.configure_memory(mem_size_mb)?;
-        let kernel_load = kernel::kernel_setup(&self.guest_memory, PathBuf::from(kernel_path))?;
+        let kernel_load = kernel::kernel_setup(
+            &self.guest_memory,
+            PathBuf::from(kernel_path),
+            Some(PathBuf::from(initramfs_path))
+        )?;
         self.configure_io()?;
         self.configure_vcpus(num_vcpus, kernel_load)?;
 
