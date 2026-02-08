@@ -1,6 +1,8 @@
 // Usage:
 // KERNEL_PATH=/path/to/kernel INITRAMFS_PATH=/path/to/initramfs cargo run --bin test
+// SERIAL_OUTPUT=/path/to/output.log - optional, to capture serial output
 use std::{u32, u8, env};
+use std::path::Path;
 
 use vmm::VMM;
 
@@ -52,7 +54,14 @@ fn main() {
 }
 
 fn create_vmm() -> Result<VMM, Error> {
-    let vmm = VMM::new().map_err(Error::VmmNew)?;
+    // Check if serial output path is provided
+    let vmm = if let Ok(serial_output) = env::var("SERIAL_OUTPUT") {
+        println!("Serial output will be written to: {}", serial_output);
+        VMM::new(Some(Path::new(&serial_output)), true)
+            .map_err(Error::VmmNew)?
+    } else {
+        VMM::new(None, true).map_err(Error::VmmNew)?
+    };
 
     Ok(vmm)
 }

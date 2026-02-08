@@ -65,7 +65,7 @@ pub struct VMM {
 
 impl VMM {
     /// Create a new VMM.
-    pub fn new() -> Result<Self> {
+    pub fn new(serial_output_path: Option<&std::path::Path>, use_stdout: bool) -> Result<Self> {
         // Open /dev/kvm and get a file descriptor to it.
         let kvm = Kvm::new().map_err(Error::KvmIoctl)?;
 
@@ -79,7 +79,7 @@ impl VMM {
             guest_memory: GuestMemoryMmap::default(),
             vcpus: vec![],
             serial: Arc::new(Mutex::new(
-                LumperSerial::new().map_err(Error::SerialCreation)?,
+                LumperSerial::new(serial_output_path, use_stdout).map_err(Error::SerialCreation)?,
             )),
         };
 
