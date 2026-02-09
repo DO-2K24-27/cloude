@@ -55,15 +55,14 @@ fn main() {
 
 fn create_vmm() -> Result<VMM, Error> {
     // Check if serial output path is provided
-    let vmm = if let Ok(serial_output) = env::var("SERIAL_OUTPUT") {
+    let writer: Box<dyn std::io::Write + Send> = if let Ok(serial_output) = env::var("SERIAL_OUTPUT") {
         println!("Serial output will be written to: {}", serial_output);
-        VMM::new(Some(Path::new(&serial_output)), true)
-            .map_err(Error::VmmNew)?
+        Box::new(std::fs::File::create(&serial_output).expect("Failed to create serial output file"))
     } else {
-        VMM::new(None, true).map_err(Error::VmmNew)?
+        Box::new(std::io::stdout())
     };
 
-    Ok(vmm)
+    VMM::new(writer).map_err(Error::VmmNew)
 }
 
 fn configure_vmm(mut vmm: VMM, vcpus: u8, memory: u32, kernel_path: &str, initramfs_path: &str) -> Result<VMM, Error> {
