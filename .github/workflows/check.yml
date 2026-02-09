@@ -1,0 +1,71 @@
+name: Check source code
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches: ["*"]
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '.github/workflows/check.yml'
+      - '.gitignore'
+
+jobs:
+  lint: 
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2.7.8
+
+      - name: Run cargo check
+        run: cd cli && cargo check --all-features
+
+      - name: Run Clippy
+        run: cd cli && cargo clippy --all-features -- -A warnings
+    
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          components: rustfmt
+
+      - name: Run cargo fmt
+        run: cd cli && cargo fmt -- --check
+  
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+
+      - uses: Swatinem/rust-cache@v2.7.8
+
+      - name: Run cargo test
+        env:
+          DATABASE_URL: postgres://cicd:cicd@localhost:5432/cicd
+        run: cd cli && cargo test --all-features
