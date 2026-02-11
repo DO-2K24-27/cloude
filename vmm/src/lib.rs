@@ -8,6 +8,7 @@ extern crate linux_loader;
 extern crate vm_memory;
 extern crate vm_superio;
 
+use std::os::fd::AsRawFd;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::{io, path::PathBuf};
@@ -16,11 +17,12 @@ use kvm_bindings::{kvm_userspace_memory_region, KVM_MAX_CPUID_ENTRIES};
 use kvm_ioctls::{Kvm, VmFd};
 use linux_loader::loader::{self, KernelLoaderResult};
 use vm_memory::{Address, GuestAddress, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
-
 mod cpu;
 use cpu::{cpuid, mptable, Vcpu};
 mod devices;
 use devices::serial::LumperSerial;
+use vmm_sys_util::poll::{EpollContext, EpollEvents};
+
 mod kernel;
 
 #[derive(Debug)]
@@ -49,6 +51,14 @@ pub enum Error {
     SerialCreation(io::Error),
     /// IRQ registration error
     IrqRegister(io::Error),
+    /// Terminal configuration error
+    TerminalConfigure(kvm_ioctls::Error),
+    /// epoll creation error
+    EpollError(io::Error),
+    /// STDIN read error
+    StdinRead(io::Error),
+    /// STDIN write error
+    StdinWrite(vm_superio::serial::Error<io::Error>),
 }
 
 /// Dedicated [`Result`](https://doc.rust-lang.org/std/result/) type.
@@ -61,17 +71,28 @@ pub struct VMM {
     vcpus: Vec<Vcpu>,
 
     serial: Arc<Mutex<LumperSerial>>,
+    input: Box<dyn VMInput>,
+    epoll: EpollContext<u32>,
 }
 
+pub trait VMInput: std::io::Read + AsRawFd {}
+impl<T: std::io::Read + AsRawFd> VMInput for T {}
 impl VMM {
     /// Create a new VMM.
-    pub fn new(output: Box<dyn std::io::Write + Send>) -> Result<Self> {
+    pub fn new(input: Box<dyn VMInput>, output: Box<dyn std::io::Write + Send>) -> Result<Self> {
         // Open /dev/kvm and get a file descriptor to it.
         let kvm = Kvm::new().map_err(Error::KvmIoctl)?;
 
         // Create a KVM VM object.
         // KVM returns a file descriptor to the VM object.
         let vm_fd = kvm.create_vm().map_err(Error::KvmIoctl)?;
+
+        // Create epoll object
+        let epoll: EpollContext<u32> =
+            EpollContext::new().map_err(|e| Error::EpollError(e.into()))?;
+        epoll
+            .add(input.as_ref(), input.as_raw_fd() as u32)
+            .map_err(|e| Error::EpollError(e.into()))?;
 
         let vmm = VMM {
             vm_fd,
@@ -81,6 +102,8 @@ impl VMM {
             serial: Arc::new(Mutex::new(
                 LumperSerial::new(output).map_err(Error::SerialCreation)?,
             )),
+            input,
+            epoll,
         };
 
         Ok(vmm)
@@ -197,15 +220,45 @@ impl VMM {
             });
         }
 
-        loop {}
+        self.host_epoll_blocking()
+            .expect("epoll loop should live forever") // TODO handle stdin failures gracefully
     }
 
-    pub fn configure(&mut self, num_vcpus: u8, mem_size_mb: u32, kernel_path: &str, initramfs_path: &str) -> Result<()> {
+    // Blocking function to poll various fd from host using epoll (e.g. stdin)
+    pub fn host_epoll_blocking(&mut self) -> Result<()> {
+        // poll epoll fd using infinite loop
+        let events = EpollEvents::new();
+        loop {
+            for event in self.epoll.wait(&events).unwrap().iter_readable() {
+                if event.token() == self.input.as_raw_fd() as u32 {
+                    // input token
+                    let mut out = [0u8; 64];
+
+                    let count = self.input.read(&mut out).map_err(Error::StdinRead)?;
+
+                    self.serial
+                        .lock()
+                        .unwrap()
+                        .serial
+                        .enqueue_raw_bytes(&out[..count])
+                        .map_err(Error::StdinWrite)?;
+                }
+            }
+        }
+    }
+
+    pub fn configure(
+        &mut self,
+        num_vcpus: u8,
+        mem_size_mb: u32,
+        kernel_path: &str,
+        initramfs_path: &str,
+    ) -> Result<()> {
         self.configure_memory(mem_size_mb)?;
         let kernel_load = kernel::kernel_setup(
             &self.guest_memory,
             PathBuf::from(kernel_path),
-            Some(PathBuf::from(initramfs_path))
+            Some(PathBuf::from(initramfs_path)),
         )?;
         self.configure_io()?;
         self.configure_vcpus(num_vcpus, kernel_load)?;
