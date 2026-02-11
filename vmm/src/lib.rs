@@ -21,7 +21,7 @@ mod cpu;
 use cpu::{cpuid, mptable, Vcpu};
 mod devices;
 use devices::serial::LumperSerial;
-use vmm_sys_util::poll::EpollContext;
+use vmm_sys_util::poll::{EpollContext, EpollEvents};
 use vmm_sys_util::terminal::Terminal;
 
 mod kernel;
@@ -87,7 +87,9 @@ impl VMM {
         // KVM returns a file descriptor to the VM object.
         let vm_fd = kvm.create_vm().map_err(Error::KvmIoctl)?;
 
+        // Create epoll object
         let epoll = EpollContext::new().map_err(|e| Error::EpollError(e.into()))?;
+        // and add provided input to it. Mark it as token 1 for identification
         epoll.add(input.as_ref(), 1).map_err(|e| Error::EpollError(e.into()))?;
 
         let vmm = VMM {
@@ -220,37 +222,28 @@ impl VMM {
 
     // Blocking function to poll various fd from host using epoll (e.g. stdin)
     pub fn host_epoll_blocking(&self) -> Result<()> {
-        const EPOLL_EVENTS_LEN: usize = 10;
-
         let stdin = io::stdin();
         let stdin_lock = stdin.lock();
         stdin_lock
             .set_raw_mode()
             .map_err(Error::TerminalConfigure)?;
-        let mut events = vec![epoll::Event::new(epoll::Events::empty(), 0); EPOLL_EVENTS_LEN];
-        let epoll_fd = self.epoll.as_raw_fd();
 
         // poll epoll fd using infinite loop
+        let events = EpollEvents::new();
         loop {
-            let num_events =
-                epoll::wait(epoll_fd, -1, &mut events[..]).map_err(Error::EpollError)?;
-
-            for event in events.iter().take(num_events) {
-                let event_data = event.data as RawFd;
-
-                // TODO: match on fd when hanling more than stdin
-                // if let libc::STDIN_FILENO = event_data {
+            for event in self.epoll.wait(&events).unwrap().iter_readable() {
+                if event.token() == 1 { // input token
                     let mut out = [0u8; 64];
-
+    
                     let count = stdin_lock.read_raw(&mut out).map_err(Error::StdinRead)?;
-
+    
                     self.serial
                         .lock()
                         .unwrap()
                         .serial
                         .enqueue_raw_bytes(&out[..count])
                         .map_err(Error::StdinWrite)?;
-                // }
+                }
             }
         }
     }
