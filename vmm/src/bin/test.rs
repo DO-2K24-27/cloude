@@ -1,3 +1,6 @@
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 // Usage:
 // KERNEL_PATH=/path/to/kernel INITRAMFS_PATH=/path/to/initramfs cargo run --bin test
 // SERIAL_OUTPUT=/path/to/output.log - optional, to capture serial output
@@ -17,7 +20,31 @@ pub enum Error {
     VmmRun(vmm::Error),
 }
 
+
+static COUNT: AtomicUsize = AtomicUsize::new(0);
+static LAST_PRESS: Mutex<Option<Instant>> = Mutex::new(None);
+extern "C" fn handle_sigint(_: i32) {
+    let now = Instant::now();
+    let mut last = LAST_PRESS.lock().unwrap();
+
+    // reset counter if last press > 2 sec ago
+    if let Some(t) = *last {
+        if now.duration_since(t) > Duration::from_secs(1) {
+            COUNT.store(0, Ordering::SeqCst);
+        }
+    }
+
+    *last = Some(now);
+
+    let c = COUNT.fetch_add(1, Ordering::SeqCst) + 1;
+    if c >= 3 {
+        println!("Force-exiting program after 3 quick Ctrl-C presses");
+        unsafe { libc::_exit(0); }
+    }
+}
+
 fn main() {
+    unsafe { libc::signal(libc::SIGINT, handle_sigint as usize); }
 
     let kernel_path = match env::var("KERNEL_PATH") {
         Ok(val) => val,
