@@ -21,11 +21,10 @@ mod cpu;
 use cpu::{cpuid, mptable, Vcpu};
 mod devices;
 use devices::serial::LumperSerial;
+use vmm_sys_util::poll::EpollContext;
 use vmm_sys_util::terminal::Terminal;
 
-use crate::epoll_context::{EPOLL_EVENTS_LEN, EpollContext};
 mod kernel;
-mod epoll_context;
 
 #[derive(Debug)]
 
@@ -73,7 +72,7 @@ pub struct VMM {
     vcpus: Vec<Vcpu>,
 
     serial: Arc<Mutex<LumperSerial>>,
-    epoll: EpollContext,
+    epoll: EpollContext<u32>,
 }
 
 pub trait VMInput: std::io::Read + AsRawFd + Send {}
@@ -88,8 +87,8 @@ impl VMM {
         // KVM returns a file descriptor to the VM object.
         let vm_fd = kvm.create_vm().map_err(Error::KvmIoctl)?;
 
-        let epoll = EpollContext::new().map_err(Error::EpollError)?;
-        epoll.add_fd(input.as_raw_fd()).map_err(Error::EpollError)?;
+        let epoll = EpollContext::new().map_err(|e| Error::EpollError(e.into()))?;
+        epoll.add(input.as_ref(), 1).map_err(|e| Error::EpollError(e.into()))?;
 
         let vmm = VMM {
             vm_fd,
@@ -221,6 +220,8 @@ impl VMM {
 
     // Blocking function to poll various fd from host using epoll (e.g. stdin)
     pub fn host_epoll_blocking(&self) -> Result<()> {
+        const EPOLL_EVENTS_LEN: usize = 10;
+
         let stdin = io::stdin();
         let stdin_lock = stdin.lock();
         stdin_lock
