@@ -28,6 +28,17 @@ impl EpollContext {
 
         Ok(())
     }
+
+    pub fn add_fd(&self, fd: RawFd) -> result::Result<(), io::Error> {
+        epoll::ctl(
+            self.raw_fd,
+            epoll::ControlOptions::EPOLL_CTL_ADD,
+            fd,
+            epoll::Event::new(epoll::Events::EPOLLIN, fd as u64),
+        )?;
+
+        Ok(())
+    }
 }
 
 impl AsRawFd for EpollContext {

@@ -62,7 +62,9 @@ fn create_vmm() -> Result<VMM, Error> {
         Box::new(std::io::stdout())
     };
 
-    VMM::new(writer).map_err(Error::VmmNew)
+    let reader= Box::new(std::io::stdin());
+
+    VMM::new(reader, writer).map_err(Error::VmmNew)
 }
 
 fn configure_vmm(mut vmm: VMM, vcpus: u8, memory: u32, kernel_path: &str, initramfs_path: &str) -> Result<VMM, Error> {

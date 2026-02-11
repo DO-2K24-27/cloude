@@ -76,9 +76,11 @@ pub struct VMM {
     epoll: EpollContext,
 }
 
+pub trait VMInput: std::io::Read + AsRawFd + Send {}
+impl<T: std::io::Read + AsRawFd + Send> VMInput for T {}
 impl VMM {
     /// Create a new VMM.
-    pub fn new(output: Box<dyn std::io::Write + Send>) -> Result<Self> {
+    pub fn new(input: Box<dyn VMInput>, output: Box<dyn std::io::Write + Send>) -> Result<Self> {
         // Open /dev/kvm and get a file descriptor to it.
         let kvm = Kvm::new().map_err(Error::KvmIoctl)?;
 
@@ -87,7 +89,7 @@ impl VMM {
         let vm_fd = kvm.create_vm().map_err(Error::KvmIoctl)?;
 
         let epoll = EpollContext::new().map_err(Error::EpollError)?;
-        epoll.add_stdin().map_err(Error::EpollError)?;
+        epoll.add_fd(input.as_raw_fd()).map_err(Error::EpollError)?;
 
         let vmm = VMM {
             vm_fd,
@@ -235,7 +237,8 @@ impl VMM {
             for event in events.iter().take(num_events) {
                 let event_data = event.data as RawFd;
 
-                if let libc::STDIN_FILENO = event_data {
+                // TODO: match on fd when hanling more than stdin
+                // if let libc::STDIN_FILENO = event_data {
                     let mut out = [0u8; 64];
 
                     let count = stdin_lock.read_raw(&mut out).map_err(Error::StdinRead)?;
@@ -246,7 +249,7 @@ impl VMM {
                         .serial
                         .enqueue_raw_bytes(&out[..count])
                         .map_err(Error::StdinWrite)?;
-                }
+                // }
             }
         }
     }
