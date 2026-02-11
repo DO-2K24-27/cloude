@@ -8,6 +8,7 @@ extern crate linux_loader;
 extern crate vm_memory;
 extern crate vm_superio;
 
+use std::os::fd::{AsRawFd, RawFd};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::{io, path::PathBuf};
@@ -16,12 +17,15 @@ use kvm_bindings::{kvm_userspace_memory_region, KVM_MAX_CPUID_ENTRIES};
 use kvm_ioctls::{Kvm, VmFd};
 use linux_loader::loader::{self, KernelLoaderResult};
 use vm_memory::{Address, GuestAddress, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
-
 mod cpu;
 use cpu::{cpuid, mptable, Vcpu};
 mod devices;
 use devices::serial::LumperSerial;
+use vmm_sys_util::terminal::Terminal;
+
+use crate::epoll_context::{EPOLL_EVENTS_LEN, EpollContext};
 mod kernel;
+mod epoll_context;
 
 #[derive(Debug)]
 
@@ -49,6 +53,14 @@ pub enum Error {
     SerialCreation(io::Error),
     /// IRQ registration error
     IrqRegister(io::Error),
+    /// Terminal configuration error
+    TerminalConfigure(kvm_ioctls::Error),
+    /// epoll creation error
+    EpollError(io::Error),
+    /// STDIN read error
+    StdinRead(kvm_ioctls::Error),
+    /// STDIN write error
+    StdinWrite(vm_superio::serial::Error<io::Error>),
 }
 
 /// Dedicated [`Result`](https://doc.rust-lang.org/std/result/) type.
@@ -61,6 +73,7 @@ pub struct VMM {
     vcpus: Vec<Vcpu>,
 
     serial: Arc<Mutex<LumperSerial>>,
+    epoll: EpollContext,
 }
 
 impl VMM {
@@ -73,6 +86,9 @@ impl VMM {
         // KVM returns a file descriptor to the VM object.
         let vm_fd = kvm.create_vm().map_err(Error::KvmIoctl)?;
 
+        let epoll = EpollContext::new().map_err(Error::EpollError)?;
+        epoll.add_stdin().map_err(Error::EpollError)?;
+
         let vmm = VMM {
             vm_fd,
             kvm,
@@ -81,6 +97,7 @@ impl VMM {
             serial: Arc::new(Mutex::new(
                 LumperSerial::new(output).map_err(Error::SerialCreation)?,
             )),
+            epoll
         };
 
         Ok(vmm)
@@ -197,7 +214,41 @@ impl VMM {
             });
         }
 
-        loop {}
+        self.host_epoll_blocking().expect("epoll loop should live forever") // TODO handle stdin failures gracefully
+    }
+
+    // Blocking function to poll various fd from host using epoll (e.g. stdin)
+    pub fn host_epoll_blocking(&self) -> Result<()> {
+        let stdin = io::stdin();
+        let stdin_lock = stdin.lock();
+        stdin_lock
+            .set_raw_mode()
+            .map_err(Error::TerminalConfigure)?;
+        let mut events = vec![epoll::Event::new(epoll::Events::empty(), 0); EPOLL_EVENTS_LEN];
+        let epoll_fd = self.epoll.as_raw_fd();
+
+        // poll epoll fd using infinite loop
+        loop {
+            let num_events =
+                epoll::wait(epoll_fd, -1, &mut events[..]).map_err(Error::EpollError)?;
+
+            for event in events.iter().take(num_events) {
+                let event_data = event.data as RawFd;
+
+                if let libc::STDIN_FILENO = event_data {
+                    let mut out = [0u8; 64];
+
+                    let count = stdin_lock.read_raw(&mut out).map_err(Error::StdinRead)?;
+
+                    self.serial
+                        .lock()
+                        .unwrap()
+                        .serial
+                        .enqueue_raw_bytes(&out[..count])
+                        .map_err(Error::StdinWrite)?;
+                }
+            }
+        }
     }
 
     pub fn configure(&mut self, num_vcpus: u8, mem_size_mb: u32, kernel_path: &str, initramfs_path: &str) -> Result<()> {
