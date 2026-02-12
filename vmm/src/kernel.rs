@@ -117,6 +117,7 @@ pub fn kernel_setup(
     guest_memory: &GuestMemoryMmap,
     kernel_path: PathBuf,
     initramfs_path: Option<PathBuf>,
+    cmdline_components: Vec<String>,
 ) -> Result<KernelLoaderResult> {
     let mut kernel_image = File::open(kernel_path).map_err(Error::IO)?;
     let zero_page_addr = GuestAddress(ZEROPG_START);
@@ -136,6 +137,11 @@ pub fn kernel_setup(
     // Build the kernel command line
     let mut cmdline = Cmdline::new(CMDLINE_MAX_SIZE);
     cmdline.insert_str(CMDLINE).map_err(Error::Cmdline)?;
+    for cmdline_str in cmdline_components {
+        cmdline.insert_str(&cmdline_str).map_err(Error::Cmdline)?;
+        cmdline.insert_str(" ").map_err(Error::Cmdline)?;
+    }
+
 
     // Load initramfs if provided
     if let Some(initramfs_path) = initramfs_path {

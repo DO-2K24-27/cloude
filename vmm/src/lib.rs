@@ -16,11 +16,14 @@ use std::{io, path::PathBuf};
 use kvm_bindings::{kvm_userspace_memory_region, KVM_MAX_CPUID_ENTRIES};
 use kvm_ioctls::{Kvm, VmFd};
 use linux_loader::loader::{self, KernelLoaderResult};
+use vm_allocator::{AddressAllocator, AllocPolicy, RangeInclusive};
 use vm_memory::{Address, GuestAddress, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
 mod cpu;
 use cpu::{cpuid, mptable, Vcpu};
 mod devices;
 use devices::serial::LumperSerial;
+use devices::tap::TapDevice;
+use devices::virtio_net::VirtioNet;
 use vmm_sys_util::poll::{EpollContext, EpollEvents};
 
 mod kernel;
@@ -59,6 +62,10 @@ pub enum Error {
     StdinRead(io::Error),
     /// STDIN write error
     StdinWrite(vm_superio::serial::Error<io::Error>),
+    /// VirtIO net creation error
+    VirtioNetCreation(io::Error),
+    /// Address allocation error
+    AddressAllocation(vm_allocator::Error),
 }
 
 /// Dedicated [`Result`](https://doc.rust-lang.org/std/result/) type.
@@ -69,8 +76,10 @@ pub struct VMM {
     kvm: Kvm,
     guest_memory: GuestMemoryMmap,
     vcpus: Vec<Vcpu>,
-
     serial: Arc<Mutex<LumperSerial>>,
+    virtio_net: Option<Arc<Mutex<VirtioNet>>>,
+    virtio_mmio_allocator: AddressAllocator,
+    cmdline_components: Vec<String>,
     input: Box<dyn VMInput>,
     epoll: EpollContext<u32>,
 }
@@ -94,7 +103,13 @@ impl VMM {
             .add(input.as_ref(), input.as_raw_fd() as u32)
             .map_err(|e| Error::EpollError(e.into()))?;
 
-        let vmm = VMM {
+        const MMIO_GAP_END: u64 = 1 << 32;
+        const MMIO_GAP_SIZE: u64 = 768 << 20;
+        const MMIO_GAP_START: u64 = MMIO_GAP_END - MMIO_GAP_SIZE;
+        let virtio_mmio_allocator =
+            AddressAllocator::new(MMIO_GAP_START, 0x2000).map_err(Error::AddressAllocation)?;
+
+        let mut vmm = VMM {
             vm_fd,
             kvm,
             guest_memory: GuestMemoryMmap::default(),
@@ -102,9 +117,14 @@ impl VMM {
             serial: Arc::new(Mutex::new(
                 LumperSerial::new(output).map_err(Error::SerialCreation)?,
             )),
+            virtio_net: None,
+            virtio_mmio_allocator,
+            cmdline_components: Vec::new(),
             input,
             epoll,
         };
+
+        vmm.configure_io()?;
 
         Ok(vmm)
     }
@@ -165,6 +185,83 @@ impl VMM {
         Ok(())
     }
 
+    /// Add a VirtIO network device with TAP backend
+    pub fn add_net_device(&mut self, tap_name: Option<&str>) -> Result<()> {
+        let mmio_addr = {
+            let allocated_range: RangeInclusive = self
+                .virtio_mmio_allocator
+                .allocate(0x1000, 0x1000, AllocPolicy::FirstMatch)
+                .map_err(Error::AddressAllocation)?;
+            allocated_range.start()
+        };
+
+        let tap = match TapDevice::new(tap_name.unwrap_or("vmtap0")) {
+            Ok(t) => {
+                println!("Created TAP device: {}", t.name());
+                Some(t)
+            }
+            Err(e) => {
+                eprintln!(
+                    "Failed to create TAP device: {:?}. Continuing without network.",
+                    e
+                );
+                None
+            }
+        };
+
+        let net = VirtioNet::new(tap, mmio_addr).map_err(Error::VirtioNetCreation)?;
+        let virtio_net = Arc::new(Mutex::new(net));
+        self.virtio_net = Some(Arc::clone(&virtio_net));
+
+        self.register_net_mmio(Arc::clone(&virtio_net), mmio_addr)?;
+        self.register_net_irq(Arc::clone(&virtio_net), 5)?;
+        self.add_net_epoll(Arc::clone(&virtio_net))?;
+
+        self.cmdline_components.push(virtio_net.lock().unwrap().cmdline_string(5));
+
+        Ok(())
+    }
+
+    fn register_net_mmio(&mut self, net: Arc<Mutex<VirtioNet>>, base_addr: u64) -> Result<()> {
+        let notify_addr = base_addr + 0x50;
+        let notify_evt = net
+            .lock()
+            .unwrap()
+            .interrupt_evt()
+            .try_clone()
+            .expect("Failed to clone interrupt event fd");
+
+        use kvm_ioctls::IoEventAddress;
+        let notify_addr_mmio = IoEventAddress::Mmio(notify_addr);
+        self.vm_fd
+            .register_ioevent(&notify_evt, &notify_addr_mmio, 0u32)
+            .map_err(Error::KvmIoctl)?;
+        Ok(())
+    }
+
+    fn register_net_irq(&mut self, net: Arc<Mutex<VirtioNet>>, irq: u32) -> Result<()> {
+        let evt = net
+            .lock()
+            .unwrap()
+            .interrupt_evt()
+            .try_clone().map_err(Error::IO)?;
+
+        self.vm_fd
+            .register_irqfd(&evt, irq)
+            .map_err(Error::KvmIoctl)?;
+        Ok(())
+    }
+
+    fn add_net_epoll(&mut self, net: Arc<Mutex<VirtioNet>>) -> Result<()> {
+        let locked_net = net.lock().unwrap();
+        let evt_fd = locked_net.interrupt_evt_fd();
+        let evt = locked_net.interrupt_evt();
+        self.epoll
+            .add(evt, evt_fd as u32)
+            .map_err(|e| Error::EpollError(e.into()))?;
+        Ok(())
+    }
+
     pub fn configure_vcpus(
         &mut self,
         num_vcpus: u8,
@@ -179,8 +276,13 @@ impl VMM {
             .map_err(Error::KvmIoctl)?;
 
         for index in 0..num_vcpus {
-            let vcpu = Vcpu::new(&self.vm_fd, index.into(), Arc::clone(&self.serial))
-                .map_err(Error::Vcpu)?;
+            let vcpu = Vcpu::new(
+                &self.vm_fd,
+                index.into(),
+                Arc::clone(&self.serial),
+                self.virtio_net.clone(),
+            )
+            .map_err(Error::Vcpu)?;
 
             // Set CPUID.
             let mut vcpu_cpuid = base_cpuid.clone();
@@ -243,6 +345,18 @@ impl VMM {
                         .enqueue_raw_bytes(&out[..count])
                         .map_err(Error::StdinWrite)?;
                 }
+
+                // Handle VirtIO network device events
+                if let Some(ref virtio_net) = self.virtio_net {
+                    let net = virtio_net.lock().unwrap();
+
+                    // Check if this is an interrupt event
+                    if event.token() == net.interrupt_evt().as_raw_fd() as u32 {
+                        // Acknowledge interrupt
+                        net.interrupt_status()
+                            .fetch_and(!0x1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                }
             }
         }
     }
@@ -259,8 +373,8 @@ impl VMM {
             &self.guest_memory,
             PathBuf::from(kernel_path),
             Some(PathBuf::from(initramfs_path)),
+            self.cmdline_components.clone(),
         )?;
-        self.configure_io()?;
         self.configure_vcpus(num_vcpus, kernel_load)?;
 
         Ok(())
