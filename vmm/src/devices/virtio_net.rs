@@ -144,9 +144,9 @@ impl VirtioNet {
     }
 
     pub fn handle_mmio_read(&self, offset: u64, data: &mut [u8]) {
-        if data.len() != 4 {
-            return;
-        }
+        // if data.len() != 4 {
+        //     return;
+        // }
 
         let value: u32 = match offset {
             0x000 => VIRTIO_MAGIC,
@@ -172,6 +172,7 @@ impl VirtioNet {
             0x060 => self.interrupt_status.load(Ordering::SeqCst),
             0x070 => self.status,
             0x100..=0x17f => {
+                println!("READING CONFIG");
                 let config_offset = (offset - 0x100) as usize;
                 if config_offset < std::mem::size_of::<VirtioNetConfig>() {
                     let config_bytes = unsafe {
@@ -188,7 +189,9 @@ impl VirtioNet {
             _ => 0,
         };
 
-        data.copy_from_slice(&value.to_le_bytes());
+        let value_bytes = value.to_le_bytes();
+        let len = data.len().min(value_bytes.len());
+        data[..len].copy_from_slice(&value_bytes[..len]);
     }
 
     pub fn handle_mmio_write(&mut self, offset: u64, data: &[u8]) {
@@ -227,6 +230,7 @@ impl VirtioNet {
                 self.interrupt_status.fetch_and(!value, Ordering::SeqCst);
             }
             0x070 => {
+                println!("STATUS VALUE={value}");
                 self.status = value;
                 if value & 0x4 != 0 {
                     self.activated = true;

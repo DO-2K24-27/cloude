@@ -209,7 +209,8 @@ impl VMM {
             }
         };
 
-        let net = VirtioNet::new(tap, mmio_addr).map_err(Error::VirtioNetCreation)?;
+        let mut net = VirtioNet::new(tap, mmio_addr).map_err(Error::VirtioNetCreation)?;
+        net.set_mac([0x42, 0x42, 0x42, 0x42, 0x42, 0x42]);
         let virtio_net = Arc::new(Mutex::new(net));
         self.virtio_net = Some(Arc::clone(&virtio_net));
 
