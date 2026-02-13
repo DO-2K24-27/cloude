@@ -271,18 +271,18 @@ impl Vcpu {
 
                 VcpuExit::MmioRead(addr, data) => {
                     // Handle VirtIO MMIO read
-                    println!("MMIO Read at address: {:#x} (size: {})", addr, data.len());
                     if addr >= 0xd0000000 && addr < 0xd0001000 {
                         let offset = addr - 0xd0000000;
                         if let Some(ref net) = self.virtio_net {
                             net.lock().unwrap().handle_mmio_read(offset, data);
                         }
                     }
+                    println!("MMIO Read at address: {:#x} (size: {}) (value: {:?})", addr, data.len(), data);
                 }
 
                 VcpuExit::MmioWrite(addr, data) => {
                     // Handle VirtIO MMIO write
-                    println!("MMIO Write at address: {:#x} (size: {})", addr, data.len());
+                    println!("MMIO Write at address: {:#x} (size: {}) (value: {:?})", addr, data.len(), data);
                     if addr >= 0xd0000000 && addr < 0xd0001000 {
                         let offset = addr - 0xd0000000;
                         if let Some(ref net) = self.virtio_net {
