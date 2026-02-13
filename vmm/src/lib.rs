@@ -28,6 +28,15 @@ use vmm_sys_util::poll::{EpollContext, EpollEvents};
 
 mod kernel;
 
+#[cfg(target_arch = "x86_64")]
+pub(crate) const MMIO_GAP_END: u64 = 1 << 32;
+/// Size of the MMIO gap.
+#[cfg(target_arch = "x86_64")]
+pub(crate) const MMIO_GAP_SIZE: u64 = 768 << 20;
+/// The start of the MMIO gap (memory area reserved for MMIO devices).
+#[cfg(target_arch = "x86_64")]
+pub(crate) const MMIO_GAP_START: u64 = MMIO_GAP_END - MMIO_GAP_SIZE;
+
 #[derive(Debug)]
 
 /// VMM errors.
@@ -135,6 +144,7 @@ impl VMM {
 
         // Create one single memory region, from zero to mem_size.
         let mem_regions = vec![(GuestAddress(0), mem_size)];
+        println!("Memory regions: {:#?}", mem_regions);
 
         // Allocate the guest memory from the memory region.
         let guest_memory = GuestMemoryMmap::from_ranges(&mem_regions).map_err(Error::Memory)?;
@@ -143,6 +153,7 @@ impl VMM {
         // 1. Create a KVM memory region mapping the memory region guest physical address to the host virtual address.
         // 2. Register the KVM memory region with KVM. EPTs are created then.
         for (index, region) in guest_memory.iter().enumerate() {
+            println!("Registering region start {:x} len {}", region.start_addr().raw_value(), region.len());
             let kvm_memory_region = kvm_userspace_memory_region {
                 slot: index as u32,
                 guest_phys_addr: region.start_addr().raw_value(),
@@ -211,6 +222,10 @@ impl VMM {
 
         let mut net = VirtioNet::new(tap, mmio_addr).map_err(Error::VirtioNetCreation)?;
         net.set_mac([0x42, 0x42, 0x42, 0x42, 0x42, 0x42]);
+
+        // Set guest memory so device can access guest buffers
+        net.set_memory(self.guest_memory.clone());
+
         let virtio_net = Arc::new(Mutex::new(net));
         self.virtio_net = Some(Arc::clone(&virtio_net));
 
@@ -218,12 +233,36 @@ impl VMM {
         self.register_net_irq(Arc::clone(&virtio_net), 5)?;
         self.add_net_epoll(Arc::clone(&virtio_net))?;
 
-        self.cmdline_components.push(virtio_net.lock().unwrap().cmdline_string(5));
+        self.cmdline_components
+            .push(virtio_net.lock().unwrap().cmdline_string(5));
 
         Ok(())
     }
 
     fn register_net_mmio(&mut self, net: Arc<Mutex<VirtioNet>>, base_addr: u64) -> Result<()> {
+        // Register MMIO memory region with KVM so guest can access VirtIO registers
+        // let mmio_addr = self
+        //     .guest_memory
+        //     .get_host_address(GuestAddress(base_addr))
+        //     .expect("Failed to get host address for MMIO");
+
+        // let region = kvm_userspace_memory_region {
+        //     slot: 3,
+        //     guest_phys_addr: base_addr,
+        //     memory_size: 0x1000,
+        //     userspace_addr: mmio_addr as u64,
+        //     flags: 0,
+        // };
+
+        // unsafe {
+        //     self.vm_fd
+        //         .set_user_memory_region(region)
+        //         .map_err(Error::KvmIoctl)?;
+        // }
+
+        println!("Registered MMIO region at {:#x} (slot 3)", base_addr);
+
+        // Register ioeventfd for queue notify (offset 0x50)
         let notify_addr = base_addr + 0x50;
         let notify_evt = net
             .lock()
@@ -237,6 +276,8 @@ impl VMM {
         self.vm_fd
             .register_ioevent(&notify_evt, &notify_addr_mmio, 0u32)
             .map_err(Error::KvmIoctl)?;
+
+        println!("Registered ioeventfd at {:#x}", notify_addr);
         Ok(())
     }
 
@@ -245,7 +286,8 @@ impl VMM {
             .lock()
             .unwrap()
             .interrupt_evt()
-            .try_clone().map_err(Error::IO)?;
+            .try_clone()
+            .map_err(Error::IO)?;
 
         self.vm_fd
             .register_irqfd(&evt, irq)

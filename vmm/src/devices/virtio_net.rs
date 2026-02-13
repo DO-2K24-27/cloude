@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::convert::TryInto;
-use std::io::{self, Result};
+use std::io;
+use std::io::Write;
 use std::os::fd::{AsRawFd, RawFd};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
-use vm_memory::{Address, GuestMemoryMmap};
+use virtio_queue::{Queue, QueueState};
+use vm_memory::{Bytes, GuestMemoryMmap};
 use vmm_sys_util::eventfd::EventFd;
 
 use super::tap::TapDevice;
@@ -75,18 +77,12 @@ pub struct VirtioNet {
     queue_size: u16,
     queue_ready: bool,
     status: u32,
-    queue_desc: u64,
-    queue_avail: u64,
-    queue_used: u64,
 
-    tx_last_avail: u16,
-    rx_last_avail: u16,
-
-    kill_evt: EventFd,
+    queues: Vec<Queue<Arc<GuestMemoryMmap>, QueueState>>,
 }
 
 impl VirtioNet {
-    pub fn new(tap: Option<TapDevice>, mmio_addr: u64) -> Result<Self> {
+    pub fn new(tap: Option<TapDevice>, mmio_addr: u64) -> io::Result<Self> {
         Ok(VirtioNet {
             device_type: 1,
             device_features: VIRTIO_NET_DEVICE_FEATURES as u64,
@@ -102,13 +98,15 @@ impl VirtioNet {
             queue_size: VIRTIO_NET_QUEUE_SIZE,
             queue_ready: false,
             status: 0,
-            queue_desc: 0,
-            queue_avail: 0,
-            queue_used: 0,
-            tx_last_avail: 0,
-            rx_last_avail: 0,
-            kill_evt: EventFd::new(libc::EFD_NONBLOCK)?,
+            queues: vec![],
         })
+    }
+
+    pub fn initialize_queues(&mut self, mem: Arc<GuestMemoryMmap>) {
+        self.queues = vec![
+            Queue::new(Arc::clone(&mem), VIRTIO_NET_QUEUE_SIZE),
+            Queue::new(Arc::clone(&mem), VIRTIO_NET_QUEUE_SIZE),
+        ];
     }
 
     pub fn mmio_addr(&self) -> u64 {
@@ -136,7 +134,7 @@ impl VirtioNet {
     }
 
     pub fn mmio_size(&self) -> u64 {
-        0x200
+        4096
     }
 
     pub fn cmdline_string(&self, irq: u32) -> String {
@@ -144,10 +142,6 @@ impl VirtioNet {
     }
 
     pub fn handle_mmio_read(&self, offset: u64, data: &mut [u8]) {
-        // if data.len() != 4 {
-        //     return;
-        // }
-
         let value: u32 = match offset {
             0x000 => VIRTIO_MAGIC,
             0x004 => VIRTIO_VERSION,
@@ -172,7 +166,6 @@ impl VirtioNet {
             0x060 => self.interrupt_status.load(Ordering::SeqCst),
             0x070 => self.status,
             0x100..=0x17f => {
-                println!("READING CONFIG");
                 let config_offset = (offset - 0x100) as usize;
                 if config_offset < std::mem::size_of::<VirtioNetConfig>() {
                     let config_bytes = unsafe {
@@ -217,14 +210,14 @@ impl VirtioNet {
                 let was_ready = self.queue_ready;
                 self.queue_ready = value != 0;
                 if self.queue_ready && !was_ready {
-                    println!(
-                        "Queue {} ready! desc={:#x}",
-                        self.queue_sel, self.queue_desc
-                    );
+                    println!("Queue {} ready!", self.queue_sel);
                 }
             }
             0x050 => {
                 println!("Queue {} notify!", self.queue_sel);
+                if self.queue_sel as usize == TX_QUEUE {
+                    self.process_tx();
+                }
             }
             0x064 => {
                 self.interrupt_status.fetch_and(!value, Ordering::SeqCst);
@@ -238,29 +231,111 @@ impl VirtioNet {
                 }
             }
             0x080 => {
-                self.queue_desc = (self.queue_desc & !0xFFFFFFFF) | (value as u64);
+                if let Some(queue) = self.queues.get_mut(self.queue_sel as usize) {
+                    queue.set_desc_table_address(Some(value), None);
+                }
             }
             0x084 => {
-                self.queue_desc = (self.queue_desc & 0xFFFFFFFF) | ((value as u64) << 32);
+                if let Some(queue) = self.queues.get_mut(self.queue_sel as usize) {
+                    queue.set_desc_table_address(None, Some(value));
+                }
             }
             0x090 => {
-                self.queue_avail = (self.queue_avail & !0xFFFFFFFF) | (value as u64);
+                if let Some(queue) = self.queues.get_mut(self.queue_sel as usize) {
+                    queue.set_avail_ring_address(Some(value), None);
+                }
             }
             0x094 => {
-                self.queue_avail = (self.queue_avail & 0xFFFFFFFF) | ((value as u64) << 32);
+                if let Some(queue) = self.queues.get_mut(self.queue_sel as usize) {
+                    queue.set_avail_ring_address(None, Some(value));
+                }
             }
             0x0a0 => {
-                self.queue_used = (self.queue_used & !0xFFFFFFFF) | (value as u64);
+                if let Some(queue) = self.queues.get_mut(self.queue_sel as usize) {
+                    queue.set_used_ring_address(Some(value), None);
+                }
             }
             0x0a4 => {
-                self.queue_used = (self.queue_used & 0xFFFFFFFF) | ((value as u64) << 32);
+                if let Some(queue) = self.queues.get_mut(self.queue_sel as usize) {
+                    queue.set_used_ring_address(None, Some(value));
+                }
             }
             _ => {}
         }
     }
 
     pub fn set_memory(&mut self, mem: GuestMemoryMmap) {
-        self.mem = Some(mem);
+        self.mem = Some(mem.clone());
+        self.initialize_queues(Arc::new(mem));
+    }
+
+    fn process_tx(&mut self) {
+        let mem = match &self.mem {
+            Some(m) => m,
+            None => return,
+        };
+
+        let queue_idx = self.queue_sel as usize;
+        if queue_idx != TX_QUEUE || queue_idx >= self.queues.len() {
+            return;
+        }
+
+        // Collect chains first to avoid borrow issues
+        let chains_data: Vec<(u16, Vec<u8>)> = {
+            let queue = &mut self.queues[queue_idx];
+
+            let mut iter = match queue.iter() {
+                Ok(i) => i,
+                Err(e) => {
+                    eprintln!("Error getting queue iter: {:?}", e);
+                    return;
+                }
+            };
+
+            let mut data = Vec::new();
+            while let Some(chain) = iter.next() {
+                let head_idx = chain.head_index();
+
+                let writable_chain = chain.writable();
+
+                let mut packet_data = Vec::new();
+                for desc in writable_chain {
+                    let addr = desc.addr();
+                    let len = desc.len() as usize;
+                    let mut buf = vec![0u8; len];
+                    if let Ok(read_len) = mem.read(&mut buf, addr) {
+                        packet_data.extend_from_slice(&buf[..read_len]);
+                    }
+                }
+
+                data.push((head_idx, packet_data));
+            }
+            data
+        };
+
+        // Now process the collected data
+        let queue = &mut self.queues[queue_idx];
+
+        for (head_idx, packet_data) in chains_data {
+            if !packet_data.is_empty() {
+                println!("TX packet: {} bytes", packet_data.len());
+
+                if let Some(ref mut tap) = self.tap {
+                    if let Err(e) = tap.write(&packet_data) {
+                        eprintln!("TAP write error: {:?}", e);
+                    } else {
+                        println!("Wrote to TAP");
+                    }
+                }
+            }
+
+            let len = packet_data.len() as u32;
+            if let Err(e) = queue.add_used(head_idx, len) {
+                eprintln!("Error adding used: {:?}", e);
+            }
+        }
+
+        self.signal_interrupt();
     }
 
     pub fn signal_interrupt(&self) {
@@ -268,7 +343,7 @@ impl VirtioNet {
         let _ = self.interrupt_evt.write(1);
     }
 
-    pub fn handle_interrupt(&mut self) -> Result<()> {
+    pub fn handle_interrupt(&mut self) -> io::Result<()> {
         self.interrupt_status.fetch_and(!0x1, Ordering::SeqCst);
         Ok(())
     }
