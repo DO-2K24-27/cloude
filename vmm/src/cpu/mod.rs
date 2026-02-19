@@ -7,9 +7,11 @@ use std::{result, u64};
 
 use kvm_bindings::{kvm_fpu, kvm_regs, CpuId};
 use kvm_ioctls::{VcpuExit, VcpuFd, VmFd};
+use vm_device::MutDeviceMmio;
 use vm_memory::{Address, Bytes, GuestAddress, GuestMemoryError, GuestMemoryMmap};
 
 use crate::devices::serial::{LumperSerial, SERIAL_PORT_BASE, SERIAL_PORT_LAST};
+use crate::devices::virtio_net::VirtioNet;
 
 pub(crate) mod cpuid;
 mod gdt;
@@ -64,15 +66,22 @@ pub(crate) struct Vcpu {
     pub vcpu_fd: VcpuFd,
 
     serial: Arc<Mutex<LumperSerial>>,
+    virtio_net: Option<Arc<Mutex<VirtioNet>>>,
 }
 
 impl Vcpu {
     /// Create a new vCPU.
-    pub fn new(vm_fd: &VmFd, index: u64, serial: Arc<Mutex<LumperSerial>>) -> Result<Self> {
+    pub fn new(
+        vm_fd: &VmFd,
+        index: u64,
+        serial: Arc<Mutex<LumperSerial>>,
+        virtio_net: Option<Arc<Mutex<VirtioNet>>>,
+    ) -> Result<Self> {
         Ok(Vcpu {
             index,
             vcpu_fd: vm_fd.create_vcpu(index).map_err(Error::KvmIoctl)?,
             serial,
+            virtio_net,
         })
     }
 
@@ -260,6 +269,37 @@ impl Vcpu {
                             .expect("Invalid serial register offset"),
                     );
                 }
+
+                VcpuExit::MmioRead(addr, data) => {
+                    // Handle VirtIO MMIO read
+                    if addr >= 0xd0000000 && addr < 0xd0001000 {
+                        let offset = addr - 0xd0000000;
+                        if let Some(ref net) = self.virtio_net {
+                            net.lock().unwrap().mmio_read(
+                                vm_device::bus::MmioAddress(0xd0000000),
+                                offset,
+                                data,
+                            );
+                        }
+                    }
+                    println!("MMIO Read at address: {:#x} (size: {}) (value: {:?})", addr, data.len(), data);
+                }
+
+                VcpuExit::MmioWrite(addr, data) => {
+                    // Handle VirtIO MMIO write
+                    println!("MMIO Write at address: {:#x} (size: {}) (value: {:?})", addr, data.len(), data);
+                    if addr >= 0xd0000000 && addr < 0xd0001000 {
+                        let offset = addr - 0xd0000000;
+                        if let Some(ref net) = self.virtio_net {
+                            net.lock().unwrap().mmio_write(
+                                vm_device::bus::MmioAddress(0xd0000000),
+                                offset,
+                                data,
+                            );
+                        }
+                    }
+                }
+
                 _ => {
                     eprintln!("Unhandled VM-Exit: {:?}", exit_reason);
                 }
