@@ -22,9 +22,10 @@ mod cpu;
 use cpu::{cpuid, mptable, Vcpu};
 mod devices;
 use devices::serial::LumperSerial;
-use devices::tap::TapDevice;
-use devices::virtio_net::VirtioNet;
 use vmm_sys_util::poll::{EpollContext, EpollEvents};
+
+use crate::devices::tap::TapDevice;
+use crate::devices::virtio_net::VirtioNet;
 
 mod kernel;
 
@@ -83,7 +84,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub struct VMM {
     vm_fd: VmFd,
     kvm: Kvm,
-    guest_memory: GuestMemoryMmap,
+    guest_memory: Arc<GuestMemoryMmap>,
     vcpus: Vec<Vcpu>,
     serial: Arc<Mutex<LumperSerial>>,
     virtio_net: Option<Arc<Mutex<VirtioNet>>>,
@@ -121,7 +122,7 @@ impl VMM {
         let mut vmm = VMM {
             vm_fd,
             kvm,
-            guest_memory: GuestMemoryMmap::default(),
+            guest_memory: Arc::new(GuestMemoryMmap::default()),
             vcpus: vec![],
             serial: Arc::new(Mutex::new(
                 LumperSerial::new(output).map_err(Error::SerialCreation)?,
@@ -153,7 +154,11 @@ impl VMM {
         // 1. Create a KVM memory region mapping the memory region guest physical address to the host virtual address.
         // 2. Register the KVM memory region with KVM. EPTs are created then.
         for (index, region) in guest_memory.iter().enumerate() {
-            println!("Registering region start {:x} len {}", region.start_addr().raw_value(), region.len());
+            println!(
+                "Registering region start {:x} len {}",
+                region.start_addr().raw_value(),
+                region.len()
+            );
             let kvm_memory_region = kvm_userspace_memory_region {
                 slot: index as u32,
                 guest_phys_addr: region.start_addr().raw_value(),
@@ -168,7 +173,7 @@ impl VMM {
                 .map_err(Error::KvmIoctl)?;
         }
 
-        self.guest_memory = guest_memory;
+        self.guest_memory = Arc::new(guest_memory);
 
         Ok(())
     }
@@ -220,11 +225,9 @@ impl VMM {
             }
         };
 
-        let mut net = VirtioNet::new(tap, mmio_addr).map_err(Error::VirtioNetCreation)?;
+        let mut net = VirtioNet::new(tap, Arc::clone(&self.guest_memory), mmio_addr)
+            .map_err(Error::VirtioNetCreation)?;
         net.set_mac([0x42, 0x42, 0x42, 0x42, 0x42, 0x42]);
-
-        // Set guest memory so device can access guest buffers
-        net.set_memory(self.guest_memory.clone());
 
         let virtio_net = Arc::new(Mutex::new(net));
         self.virtio_net = Some(Arc::clone(&virtio_net));
