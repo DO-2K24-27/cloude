@@ -13,7 +13,7 @@ use virtio_queue::Queue;
 use vm_allocator::RangeInclusive;
 use vm_device::bus::MmioAddress;
 use vm_device::MutDeviceMmio;
-use vm_memory::GuestMemoryMmap;
+use vm_memory::{GuestMemoryMmap, GuestUsize};
 use vmm_sys_util::eventfd::EventFd;
 
 use crate::devices::virtio::net::queue_handler::QueueHandler;
@@ -103,10 +103,28 @@ impl VirtioNetDevice {
             endpoint,
         })
     }
+    // Converts a `GuestUsize` to a concise string representation, with multiplier suffixes.
+    fn guestusize_to_str(size: GuestUsize) -> String {
+        const KB_MULT: u64 = 1 << 10;
+        const MB_MULT: u64 = KB_MULT << 10;
+        const GB_MULT: u64 = MB_MULT << 10;
+
+        if size % GB_MULT == 0 {
+            return format!("{}G", size / GB_MULT);
+        }
+        if size % MB_MULT == 0 {
+            return format!("{}M", size / MB_MULT);
+        }
+        if size % KB_MULT == 0 {
+            return format!("{}K", size / KB_MULT);
+        }
+        size.to_string()
+    }
 
     pub fn cmdline_string(&self) -> String {
         format!(
-            " virtio_mmio.device=4K@{:#x}:{}",
+            " virtio_mmio.device={}@{:#x}:{}",
+            Self::guestusize_to_str(self.mmio_range.len()),
             self.mmio_range.start(),
             self.irqfd.as_raw_fd()
         )
