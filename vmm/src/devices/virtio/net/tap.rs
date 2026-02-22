@@ -55,7 +55,6 @@ ioctl_iow_nr!(TUNSETVNETHDRSZ, TUNTAP, 216, ::std::os::raw::c_int);
 #[derive(Debug)]
 pub struct Tap {
     tap_file: File,
-    pub(crate) if_name: [u8; IFACE_NAME_MAX_LEN],
 }
 
 // Returns a byte vector representing the contents of a null terminated C string which
@@ -143,19 +142,7 @@ impl Tap {
             *dst = *src as u8;
         }
 
-        Ok(Tap {
-            tap_file: tuntap,
-            if_name,
-        })
-    }
-
-    pub fn if_name_as_str(&self) -> &str {
-        let len = self
-            .if_name
-            .iter()
-            .position(|x| *x == 0)
-            .unwrap_or(IFACE_NAME_MAX_LEN);
-        std::str::from_utf8(&self.if_name[..len]).unwrap_or("")
+        Ok(Tap { tap_file: tuntap })
     }
 
     /// Set the offload flags for the tap interface.

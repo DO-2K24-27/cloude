@@ -2,7 +2,6 @@
 
 use std::borrow::{Borrow, BorrowMut};
 use std::convert::{TryFrom, TryInto};
-use std::os::fd::AsRawFd;
 use std::sync::{Arc, Mutex};
 
 use event_manager::{MutEventSubscriber, RemoteEndpoint, SubscriberId};
@@ -56,7 +55,6 @@ pub const TUN_F_UFO: ::std::os::raw::c_uint = 16;
 
 pub struct VirtioNetDevice {
     vm_fd: Arc<VmFd>,
-    guest_memory: Arc<GuestMemoryMmap>,
     tap_name: String,
     /// addresses where the device lives in the guest
     pub mmio_range: RangeInclusive,
@@ -96,7 +94,6 @@ impl VirtioNetDevice {
 
         Ok(VirtioNetDevice {
             vm_fd,
-            guest_memory,
             irq,
             irqfd,
             tap_name,

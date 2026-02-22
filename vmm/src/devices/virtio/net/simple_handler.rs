@@ -165,14 +165,14 @@ impl<M: GuestAddressSpace, S: SignalUsedQueue> SimpleHandler<M, S> {
 
             while let Some(mut chain) = self.txq.iter()?.next() {
                 self.send_frame_from_chain(&mut chain)?;
-                
+
                 self.txq.add_used(chain.head_index(), 0)?;
-                
+
                 if self.txq.needs_notification()? {
                     self.driver_notify.signal_used_queue(TXQ_INDEX);
                 }
             }
-            
+
             if !self.txq.enable_notification()? {
                 return Ok(());
             }
