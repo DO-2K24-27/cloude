@@ -60,7 +60,9 @@ pub struct VirtioNetDevice {
     tap_name: String,
     /// addresses where the device lives in the guest
     pub mmio_range: RangeInclusive,
-    /// IRQ eventfd for signaling the driver (guest).
+    // IRQ (id on the guest side), for signaling the driver (guest)
+    irq: u32,
+    /// IRQ eventfd (id on the VMM side) for signaling the driver (guest).
     irqfd: Arc<EventFd>,
     /// virtio device config sur lib
     virtio_cfg: VirtioConfig<Arc<GuestMemoryMmap>>,
@@ -95,6 +97,7 @@ impl VirtioNetDevice {
         Ok(VirtioNetDevice {
             vm_fd,
             guest_memory,
+            irq,
             irqfd,
             tap_name,
             mmio_range,
@@ -126,7 +129,7 @@ impl VirtioNetDevice {
             " virtio_mmio.device={}@{:#x}:{}",
             Self::guestusize_to_str(self.mmio_range.len()),
             self.mmio_range.start(),
-            self.irqfd.as_raw_fd()
+            self.irq
         )
     }
 }
