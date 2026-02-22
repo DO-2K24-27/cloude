@@ -22,16 +22,11 @@ impl AsRawFd for FdWrapper {
 pub struct StdinHandler {
     input: Box<dyn VMInput>,
     serial: Arc<Mutex<LumperSerial>>,
-    stdin_fd: Option<FdWrapper>,
 }
 
 impl StdinHandler {
     pub fn new(input: Box<dyn VMInput>, serial: Arc<Mutex<LumperSerial>>) -> Self {
-        StdinHandler {
-            input,
-            serial,
-            stdin_fd: None,
-        }
+        StdinHandler { input, serial }
     }
 }
 
@@ -57,10 +52,8 @@ impl MutEventSubscriber for StdinHandler {
                         }
                     }
                     Ok(0) => {
-                        if let Some(fd) = &self.stdin_fd {
-                            ops.remove(Events::empty(fd))
-                                .expect("Failed to remove stdin event on EOF");
-                        }
+                        ops.remove(Events::empty(&FdWrapper(self.input.as_raw_fd())))
+                            .expect("Failed to remove stdin event on EOF");
                     }
                     Err(e) => {
                         eprintln!("Failed to read stdin: {:?}", e);
@@ -74,13 +67,10 @@ impl MutEventSubscriber for StdinHandler {
 
     fn init(&mut self, ops: &mut EventOps) {
         let raw_fd = self.input.as_raw_fd();
-        self.stdin_fd = Some(FdWrapper(raw_fd));
 
-        ops.add(Events::with_data(
-            self.stdin_fd.as_ref().unwrap(),
-            STDIN_DATA,
-            EventSet::IN,
-        ))
-        .expect("Unable to add stdin event");
+        let wrapper = FdWrapper(raw_fd);
+
+        ops.add(Events::with_data(&wrapper, STDIN_DATA, EventSet::IN))
+            .expect("Unable to add stdin event");
     }
 }
