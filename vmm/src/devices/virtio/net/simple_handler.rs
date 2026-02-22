@@ -135,7 +135,6 @@ impl<M: GuestAddressSpace, S: SignalUsedQueue> SimpleHandler<M, S> {
         &mut self,
         chain: &mut DescriptorChain<M::T>,
     ) -> result::Result<u32, Error> {
-        println!("send_frame_from_chain()");
         let mut count = 0;
 
         while let Some(desc) = chain.next() {
@@ -151,45 +150,32 @@ impl<M: GuestAddressSpace, S: SignalUsedQueue> SimpleHandler<M, S> {
                 .memory()
                 .read_slice(&mut self.txbuf[count..count + len], desc.addr())
                 .map_err(Error::GuestMemory)?;
-            println!("Done !");
 
             count += len;
         }
 
         self.tap.write(&self.txbuf[..count]).map_err(Error::Tap)?;
-        println!("send_frame_from_chain() end");
 
         Ok(count as u32)
     }
 
     pub fn process_txq(&mut self) -> result::Result<(), Error> {
-        println!("process_txq()");
         loop {
-            println!("process_txq() loop");
             self.txq.disable_notification()?;
 
             while let Some(mut chain) = self.txq.iter()?.next() {
-                println!("A");
                 self.send_frame_from_chain(&mut chain)?;
-                println!("B");
                 
                 self.txq.add_used(chain.head_index(), 0)?;
-                println!("C");
                 
                 if self.txq.needs_notification()? {
-                    println!("D");
                     self.driver_notify.signal_used_queue(TXQ_INDEX);
                 }
-                println!("E");
             }
-            println!("F");
             
             if !self.txq.enable_notification()? {
-                println!("G");
                 return Ok(());
             }
-            println!("H");
-            println!("process_txq() loop end");
         }
     }
 

@@ -156,11 +156,6 @@ impl VMM {
             .map_err(Error::Memory)?;
 
         for (index, region) in guest_memory.iter().enumerate() {
-            println!(
-                "Registering region start {:x} len {}",
-                region.start_addr().raw_value(),
-                region.len()
-            );
             let kvm_memory_region = kvm_userspace_memory_region {
                 slot: index as u32,
                 guest_phys_addr: region.start_addr().raw_value(),

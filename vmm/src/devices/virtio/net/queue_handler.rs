@@ -37,7 +37,6 @@ impl<M: GuestAddressSpace> QueueHandler<M> {
 
 impl<M: GuestAddressSpace> MutEventSubscriber for QueueHandler<M> {
     fn process(&mut self, events: Events, ops: &mut EventOps) {
-        println!("process() {:?} {}", events.event_set(), events.data());
         // TODO: We can also consider panicking on the errors that cannot be generated
         // or influenced.
 

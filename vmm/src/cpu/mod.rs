@@ -276,13 +276,6 @@ impl Vcpu {
                             net.read(addr - net.mmio_range.start(), data);
                         }
                     }
-
-                    println!(
-                        "MMIO Read at address: {:#x} (size: {}) (value: {:?})",
-                        addr,
-                        data.len(),
-                        data
-                    );
                 }
 
                 VcpuExit::MmioWrite(addr, data) => {
@@ -293,13 +286,6 @@ impl Vcpu {
                             net.write(addr - start, data);
                         }
                     }
-
-                    println!(
-                        "MMIO Write at address: {:#x} (size: {}) (value: {:?})",
-                        addr,
-                        data.len(),
-                        data
-                    );
                 }
 
                 _ => {

@@ -255,11 +255,7 @@ impl VirtioDeviceActions for VirtioNetDevice {
     }
 }
 
-impl VirtioMmioDevice<Arc<GuestMemoryMmap>> for VirtioNetDevice {
-    fn queue_notify(&mut self, _val: u32) {
-        println!("Queue notify called");
-    }
-}
+impl VirtioMmioDevice<Arc<GuestMemoryMmap>> for VirtioNetDevice {}
 
 impl MutDeviceMmio for VirtioNetDevice {
     fn mmio_read(&mut self, _base: MmioAddress, offset: u64, data: &mut [u8]) {
