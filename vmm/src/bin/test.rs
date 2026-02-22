@@ -2,22 +2,25 @@
 // KERNEL_PATH=/path/to/kernel INITRAMFS_PATH=/path/to/initramfs cargo run --bin test
 // SERIAL_OUTPUT=/path/to/output.log - optional, to capture serial output
 
-use std::{env, os::fd::AsRawFd};
+use std::env;
 use vmm::{VMInput, VMM};
 use vmm_sys_util::terminal::Terminal;
 
-#[derive(Debug)]
-pub enum Error {
-    VmmNew(vmm::Error),
+fn setup_logging() {
+    let mut builder =
+        &mut env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
+    if std::env::var("RUST_LOG").is_err() && std::env::var("VERBOSE").is_err() {
+        // Simplify log format
+        builder = builder.format_timestamp(None).format_target(false);
+    }
+    builder.init();
 
-    VmmKernel(env::VarError),
-
-    VmmConfigure(vmm::Error),
-
-    VmmRun(vmm::Error),
+    log::debug!("Debug logging enabled");
 }
 
 fn main() {
+    setup_logging();
+
     let kernel_path = match env::var("KERNEL_PATH") {
         Ok(val) => val,
         Err(e) => return eprintln!("Error getting KERNEL_PATH: {}", e),
@@ -29,31 +32,9 @@ fn main() {
     };
 
     let vcpus: u8 = 2;
-    let memory: u32 = 1024; // in MiB
+    let memory: usize = 1024 << 20; // convert from 1024 MB to bytes
 
-    let vmm = match create_vmm() {
-        Ok(vmm) => vmm,
-        Err(e) => {
-            eprintln!("Error creating VMM: {:?}", e);
-            return;
-        }
-    };
-
-    let vmm = match configure_vmm(vmm, vcpus, memory, &kernel_path, &initramfs_path) {
-        Ok(vmm) => vmm,
-        Err(e) => {
-            eprintln!("Error configuring VMM: {:?}", e);
-            return;
-        }
-    };
-
-    if let Err(e) = start_vmm(vmm) {
-        eprintln!("Error running VMM: {:?}", e);
-    }
-}
-
-fn create_vmm() -> Result<VMM, Error> {
-    // Check if serial output path is provided
+    // Configure serial output
     let writer: Box<dyn std::io::Write + Send> =
         if let Ok(serial_output) = env::var("SERIAL_OUTPUT") {
             println!("Serial output will be written to: {}", serial_output);
@@ -72,24 +53,24 @@ fn create_vmm() -> Result<VMM, Error> {
         .expect("Failed to set stdin to raw mode");
     let stdin_box: Box<dyn VMInput> = Box::new(stdin_lock);
 
-    VMM::new(stdin_box, writer).map_err(Error::VmmNew)
-}
+    // Create VMM
+    let mut vmm = match VMM::new(stdin_box, writer, memory) {
+        Ok(v) => v,
+        Err(e) => return eprintln!("Error creating VMM: {:?}", e),
+    };
 
-fn configure_vmm(
-    mut vmm: VMM,
-    vcpus: u8,
-    memory: u32,
-    kernel_path: &str,
-    initramfs_path: &str,
-) -> Result<VMM, Error> {
-    vmm.configure(vcpus, memory, kernel_path, initramfs_path)
-        .map_err(Error::VmmConfigure)?;
+    // Add network device if enabled
+    if let Some(tap_name) = env::var("TAP_DEVICE").ok() {
+        if let Err(e) = vmm.add_net_device(tap_name) {
+            return eprintln!("Error adding net device: {:?}", e);
+        }
+    }
 
-    Ok(vmm)
-}
+    // Configure VMM
+    if let Err(e) = vmm.configure(vcpus, &kernel_path, &initramfs_path) {
+        return eprintln!("Error configuring VMM: {:?}", e);
+    }
 
-fn start_vmm(mut vmm: VMM) -> Result<(), Error> {
+    // Run VMM
     vmm.run();
-
-    Ok(())
 }

@@ -117,6 +117,7 @@ pub fn kernel_setup(
     guest_memory: &GuestMemoryMmap,
     kernel_path: PathBuf,
     initramfs_path: Option<PathBuf>,
+    cmdline_components: Vec<String>,
 ) -> Result<KernelLoaderResult> {
     let mut kernel_image = File::open(kernel_path).map_err(Error::IO)?;
     let zero_page_addr = GuestAddress(ZEROPG_START);
@@ -136,19 +137,29 @@ pub fn kernel_setup(
     // Build the kernel command line
     let mut cmdline = Cmdline::new(CMDLINE_MAX_SIZE);
     cmdline.insert_str(CMDLINE).map_err(Error::Cmdline)?;
+    for cmdline_str in cmdline_components {
+        cmdline.insert_str(&cmdline_str).map_err(Error::Cmdline)?;
+        cmdline.insert_str(" ").map_err(Error::Cmdline)?;
+    }
 
     // Load initramfs if provided
     if let Some(initramfs_path) = initramfs_path {
         let (initramfs_addr, initramfs_size) = load_initramfs(guest_memory, initramfs_path)?;
-        
+
         // Add initramfs location to boot parameters
         bootparams.hdr.ramdisk_image = initramfs_addr.raw_value() as u32;
         bootparams.hdr.ramdisk_size = initramfs_size as u32;
-        
+
         // Add rdinit to command line
-        cmdline.insert_str(" rdinit=/init").map_err(Error::Cmdline)?;
-        
-        println!("Initramfs loaded: {} bytes at 0x{:x}", initramfs_size, initramfs_addr.raw_value());
+        cmdline
+            .insert_str(" rdinit=/init")
+            .map_err(Error::Cmdline)?;
+
+        println!(
+            "Initramfs loaded: {} bytes at 0x{:x}",
+            initramfs_size,
+            initramfs_addr.raw_value()
+        );
     }
 
     // Add the kernel command line to the boot parameters.
@@ -156,12 +167,7 @@ pub fn kernel_setup(
     bootparams.hdr.cmdline_size = cmdline.as_str().len() as u32 + 1;
 
     // Load the kernel command line into guest memory.
-    load_cmdline(
-        guest_memory,
-        GuestAddress(CMDLINE_START),
-        &cmdline,
-    )
-    .map_err(Error::KernelLoad)?;
+    load_cmdline(guest_memory, GuestAddress(CMDLINE_START), &cmdline).map_err(Error::KernelLoad)?;
 
     // Write the boot parameters in the zeropage.
     LinuxBootConfigurator::write_bootparams::<GuestMemoryMmap>(
@@ -188,44 +194,49 @@ fn load_initramfs(
     initramfs_path: PathBuf,
 ) -> Result<(GuestAddress, usize)> {
     let mut initramfs_file = File::open(&initramfs_path).map_err(Error::IO)?;
-    
+
     // Read the entire initramfs into memory
     let mut initramfs_data = Vec::new();
-    initramfs_file.read_to_end(&mut initramfs_data).map_err(Error::IO)?;
-    
+    initramfs_file
+        .read_to_end(&mut initramfs_data)
+        .map_err(Error::IO)?;
+
     let initramfs_size = initramfs_data.len();
     let initramfs_addr = GuestAddress(INITRAMFS_START);
-    
+
     // Verify we have enough guest memory
-    let required_addr = initramfs_addr.checked_add(initramfs_size as u64)
+    let required_addr = initramfs_addr
+        .checked_add(initramfs_size as u64)
         .ok_or(Error::HimemStartPastMemEnd)?;
-    
+
     if required_addr > guest_memory.last_addr() {
         return Err(Error::HimemStartPastMemEnd);
     }
-    
+
     // Write initramfs to guest memory region by region
     // Find the region that contains our initramfs address
     for region in guest_memory.iter() {
         if initramfs_addr >= region.start_addr() && initramfs_addr <= region.last_addr() {
             // This region contains the start of our initramfs
-            let offset_in_region = (initramfs_addr.raw_value() - region.start_addr().raw_value()) as usize;
-            
+            let offset_in_region =
+                (initramfs_addr.raw_value() - region.start_addr().raw_value()) as usize;
+
             // Get the volatile slice
-            let vol_slice = region.as_volatile_slice()
+            let vol_slice = region
+                .as_volatile_slice()
                 .map_err(|_| Error::HimemStartPastMemEnd)?;
-            
+
             // Get the subslice at the right offset
             let slice = vol_slice
                 .subslice(offset_in_region, initramfs_size)
                 .map_err(|_| Error::HimemStartPastMemEnd)?;
-            
+
             // Copy the data to guest memory
             slice.copy_from(&initramfs_data[..]);
-            
+
             break;
         }
     }
-    
+
     Ok((initramfs_addr, initramfs_size))
 }
