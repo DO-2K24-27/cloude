@@ -5,11 +5,12 @@ use std::convert::TryInto;
 use std::sync::{Arc, Mutex};
 use std::{result, u64};
 
+use crate::devices::serial::{LumperSerial, SERIAL_PORT_BASE, SERIAL_PORT_LAST};
+use crate::devices::virtio::net::device::VirtioNetDevice;
 use kvm_bindings::{kvm_fpu, kvm_regs, CpuId};
 use kvm_ioctls::{VcpuExit, VcpuFd, VmFd};
+use virtio_device::VirtioMmioDevice;
 use vm_memory::{Address, Bytes, GuestAddress, GuestMemoryError, GuestMemoryMmap};
-
-use crate::devices::serial::{LumperSerial, SERIAL_PORT_BASE, SERIAL_PORT_LAST};
 
 pub(crate) mod cpuid;
 mod gdt;
@@ -64,15 +65,22 @@ pub(crate) struct Vcpu {
     pub vcpu_fd: VcpuFd,
 
     serial: Arc<Mutex<LumperSerial>>,
+    virtio_net: Option<Arc<Mutex<VirtioNetDevice>>>,
 }
 
 impl Vcpu {
     /// Create a new vCPU.
-    pub fn new(vm_fd: &VmFd, index: u64, serial: Arc<Mutex<LumperSerial>>) -> Result<Self> {
+    pub fn new(
+        vm_fd: &VmFd,
+        index: u64,
+        serial: Arc<Mutex<LumperSerial>>,
+        virtio_net: Option<Arc<Mutex<VirtioNetDevice>>>,
+    ) -> Result<Self> {
         Ok(Vcpu {
             index,
             vcpu_fd: vm_fd.create_vcpu(index).map_err(Error::KvmIoctl)?,
             serial,
+            virtio_net,
         })
     }
 
@@ -260,6 +268,26 @@ impl Vcpu {
                             .expect("Invalid serial register offset"),
                     );
                 }
+
+                VcpuExit::MmioRead(addr, data) => {
+                    if let Some(ref net) = self.virtio_net {
+                        let net = net.lock().unwrap();
+                        if net.mmio_range.start() <= addr && addr < net.mmio_range.end() {
+                            net.read(addr - net.mmio_range.start(), data);
+                        }
+                    }
+                }
+
+                VcpuExit::MmioWrite(addr, data) => {
+                    if let Some(ref net) = self.virtio_net {
+                        let mut net = net.lock().unwrap();
+                        if net.mmio_range.start() <= addr && addr < net.mmio_range.end() {
+                            let start = net.mmio_range.start();
+                            net.write(addr - start, data);
+                        }
+                    }
+                }
+
                 _ => {
                     eprintln!("Unhandled VM-Exit: {:?}", exit_reason);
                 }

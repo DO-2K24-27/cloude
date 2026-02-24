@@ -13,17 +13,32 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::{io, path::PathBuf};
 
+use event_manager::{EventManager, MutEventSubscriber, SubscriberOps};
 use kvm_bindings::{kvm_userspace_memory_region, KVM_MAX_CPUID_ENTRIES};
 use kvm_ioctls::{Kvm, VmFd};
 use linux_loader::loader::{self, KernelLoaderResult};
+use vm_allocator::{AddressAllocator, AllocPolicy, RangeInclusive};
 use vm_memory::{Address, GuestAddress, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
 mod cpu;
 use cpu::{cpuid, mptable, Vcpu};
 mod devices;
 use devices::serial::LumperSerial;
-use vmm_sys_util::poll::{EpollContext, EpollEvents};
+use devices::stdin::StdinHandler;
 
+use crate::devices::virtio::net::device::VirtioNetDevice;
+use crate::irq_allocator::IrqAllocator;
+
+mod irq_allocator;
 mod kernel;
+
+#[cfg(target_arch = "x86_64")]
+pub(crate) const MMIO_GAP_END: u64 = 1 << 32;
+/// Size of the MMIO gap.
+#[cfg(target_arch = "x86_64")]
+pub(crate) const MMIO_GAP_SIZE: u64 = 768 << 20;
+/// The start of the MMIO gap (memory area reserved for MMIO devices).
+#[cfg(target_arch = "x86_64")]
+pub(crate) const MMIO_GAP_START: u64 = MMIO_GAP_END - MMIO_GAP_SIZE;
 
 #[derive(Debug)]
 
@@ -59,69 +74,87 @@ pub enum Error {
     StdinRead(io::Error),
     /// STDIN write error
     StdinWrite(vm_superio::serial::Error<io::Error>),
+    /// VirtIO net creation error
+    VirtioNetCreation(io::Error),
+    /// Address allocation error
+    AddressAllocation(vm_allocator::Error),
+    Virtio(devices::virtio::Error),
 }
 
 /// Dedicated [`Result`](https://doc.rust-lang.org/std/result/) type.
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub struct VMM {
-    vm_fd: VmFd,
+    vm_fd: Arc<VmFd>,
     kvm: Kvm,
-    guest_memory: GuestMemoryMmap,
+    guest_memory: Arc<GuestMemoryMmap>,
     vcpus: Vec<Vcpu>,
-
     serial: Arc<Mutex<LumperSerial>>,
-    input: Box<dyn VMInput>,
-    epoll: EpollContext<u32>,
+    virtio_net: Option<Arc<Mutex<VirtioNetDevice>>>,
+    cmdline_components: Vec<String>,
+    event_manager: EventManager<Arc<Mutex<dyn MutEventSubscriber>>>,
+    virtio_mmio_allocator: AddressAllocator,
+    irq_allocator: IrqAllocator,
 }
 
 pub trait VMInput: std::io::Read + AsRawFd {}
 impl<T: std::io::Read + AsRawFd> VMInput for T {}
 impl VMM {
     /// Create a new VMM.
-    pub fn new(input: Box<dyn VMInput>, output: Box<dyn std::io::Write + Send>) -> Result<Self> {
-        // Open /dev/kvm and get a file descriptor to it.
-        let kvm = Kvm::new().map_err(Error::KvmIoctl)?;
-
+    pub fn new(
+        input: Box<dyn VMInput>,
+        output: Box<dyn std::io::Write + Send>,
+        memory_size: usize,
+    ) -> Result<Self> {
         // Create a KVM VM object.
-        // KVM returns a file descriptor to the VM object.
+        let kvm = Kvm::new().map_err(Error::KvmIoctl)?;
         let vm_fd = kvm.create_vm().map_err(Error::KvmIoctl)?;
 
-        // Create epoll object
-        let epoll: EpollContext<u32> =
-            EpollContext::new().map_err(|e| Error::EpollError(e.into()))?;
-        epoll
-            .add(input.as_ref(), input.as_raw_fd() as u32)
-            .map_err(|e| Error::EpollError(e.into()))?;
+        // Create event manager
+        let mut event_manager: EventManager<Arc<Mutex<dyn MutEventSubscriber>>> =
+            EventManager::new().map_err(|e| {
+                Error::EpollError(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                ))
+            })?;
 
-        let vmm = VMM {
-            vm_fd,
+        let virtio_mmio_allocator =
+            AddressAllocator::new(MMIO_GAP_START, 0x2000).map_err(Error::AddressAllocation)?;
+
+        let guest_memory = Self::configure_memory(&vm_fd, memory_size)?;
+
+        let serial = Arc::new(Mutex::new(
+            LumperSerial::new(output).map_err(Error::SerialCreation)?,
+        ));
+
+        // Create stdin handler and add it to event manager
+        let stdin_handler: Arc<Mutex<dyn MutEventSubscriber>> =
+            Arc::new(Mutex::new(StdinHandler::new(input, serial.clone())));
+        event_manager.add_subscriber(stdin_handler);
+
+        let mut vmm = VMM {
+            vm_fd: Arc::new(vm_fd),
             kvm,
-            guest_memory: GuestMemoryMmap::default(),
+            guest_memory: Arc::new(guest_memory),
             vcpus: vec![],
-            serial: Arc::new(Mutex::new(
-                LumperSerial::new(output).map_err(Error::SerialCreation)?,
-            )),
-            input,
-            epoll,
+            serial,
+            virtio_net: None,
+            virtio_mmio_allocator,
+            cmdline_components: Vec::new(),
+            event_manager,
+            irq_allocator: IrqAllocator::new(5),
         };
+
+        vmm.configure_io()?;
 
         Ok(vmm)
     }
 
-    pub fn configure_memory(&mut self, mem_size_mb: u32) -> Result<()> {
-        // Convert memory size from MBytes to bytes.
-        let mem_size = ((mem_size_mb as u64) << 20) as usize;
+    fn configure_memory(vm_fd: &VmFd, memory_size: usize) -> Result<GuestMemoryMmap> {
+        let guest_memory = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), memory_size)])
+            .map_err(Error::Memory)?;
 
-        // Create one single memory region, from zero to mem_size.
-        let mem_regions = vec![(GuestAddress(0), mem_size)];
-
-        // Allocate the guest memory from the memory region.
-        let guest_memory = GuestMemoryMmap::from_ranges(&mem_regions).map_err(Error::Memory)?;
-
-        // For each memory region in guest_memory:
-        // 1. Create a KVM memory region mapping the memory region guest physical address to the host virtual address.
-        // 2. Register the KVM memory region with KVM. EPTs are created then.
         for (index, region) in guest_memory.iter().enumerate() {
             let kvm_memory_region = kvm_userspace_memory_region {
                 slot: index as u32,
@@ -133,13 +166,10 @@ impl VMM {
             };
 
             // Register the KVM memory region with KVM.
-            unsafe { self.vm_fd.set_user_memory_region(kvm_memory_region) }
-                .map_err(Error::KvmIoctl)?;
+            unsafe { vm_fd.set_user_memory_region(kvm_memory_region) }.map_err(Error::KvmIoctl)?;
         }
 
-        self.guest_memory = guest_memory;
-
-        Ok(())
+        Ok(guest_memory)
     }
 
     pub fn configure_io(&mut self) -> Result<()> {
@@ -165,6 +195,35 @@ impl VMM {
         Ok(())
     }
 
+    /// Add a VirtIO network device with TAP backend
+    pub fn add_net_device(&mut self, tap_name: String) -> Result<()> {
+        let allocated_range: RangeInclusive = self
+            .virtio_mmio_allocator
+            .allocate(0x1000, 0x1000, AllocPolicy::FirstMatch)
+            .map_err(Error::AddressAllocation)?;
+
+        let irq = self.irq_allocator.allocate();
+
+        let endpoint = self.event_manager.remote_endpoint();
+
+        let net = VirtioNetDevice::new(
+            self.vm_fd.clone(),
+            irq,
+            tap_name,
+            self.guest_memory.clone(),
+            allocated_range,
+            endpoint,
+        )
+        .map_err(Error::Virtio)?;
+
+        self.cmdline_components.push(net.cmdline_string());
+
+        let virtio_net = Arc::new(Mutex::new(net));
+        self.virtio_net = Some(Arc::clone(&virtio_net));
+
+        Ok(())
+    }
+
     pub fn configure_vcpus(
         &mut self,
         num_vcpus: u8,
@@ -179,8 +238,13 @@ impl VMM {
             .map_err(Error::KvmIoctl)?;
 
         for index in 0..num_vcpus {
-            let vcpu = Vcpu::new(&self.vm_fd, index.into(), Arc::clone(&self.serial))
-                .map_err(Error::Vcpu)?;
+            let vcpu = Vcpu::new(
+                &self.vm_fd,
+                index.into(),
+                Arc::clone(&self.serial),
+                self.virtio_net.clone(),
+            )
+            .map_err(Error::Vcpu)?;
 
             // Set CPUID.
             let mut vcpu_cpuid = base_cpuid.clone();
@@ -220,47 +284,25 @@ impl VMM {
             });
         }
 
-        self.host_epoll_blocking()
-            .expect("epoll loop should live forever") // TODO handle stdin failures gracefully
-    }
-
-    // Blocking function to poll various fd from host using epoll (e.g. stdin)
-    pub fn host_epoll_blocking(&mut self) -> Result<()> {
-        // poll epoll fd using infinite loop
-        let events = EpollEvents::new();
         loop {
-            for event in self.epoll.wait(&events).unwrap().iter_readable() {
-                if event.token() == self.input.as_raw_fd() as u32 {
-                    // input token
-                    let mut out = [0u8; 64];
-
-                    let count = self.input.read(&mut out).map_err(Error::StdinRead)?;
-
-                    self.serial
-                        .lock()
-                        .unwrap()
-                        .serial
-                        .enqueue_raw_bytes(&out[..count])
-                        .map_err(Error::StdinWrite)?;
-                }
-            }
+            self.event_manager
+                .run()
+                .expect("event manager loop should live forever");
         }
     }
 
     pub fn configure(
         &mut self,
         num_vcpus: u8,
-        mem_size_mb: u32,
         kernel_path: &str,
         initramfs_path: &str,
     ) -> Result<()> {
-        self.configure_memory(mem_size_mb)?;
         let kernel_load = kernel::kernel_setup(
             &self.guest_memory,
             PathBuf::from(kernel_path),
             Some(PathBuf::from(initramfs_path)),
+            self.cmdline_components.clone(),
         )?;
-        self.configure_io()?;
         self.configure_vcpus(num_vcpus, kernel_load)?;
 
         Ok(())
