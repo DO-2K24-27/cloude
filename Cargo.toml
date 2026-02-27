@@ -1,3 +1,3 @@
 [workspace]
 resolver = "3"
-members = ["vmm", "cli", "lumper"]
+members = ["vmm", "cli", "backend"]

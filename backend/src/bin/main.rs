@@ -8,7 +8,7 @@ use tracing_subscriber;
 async fn main() -> Result<(), std::io::Error> {
     // Get the server address from the environment variable or use a default
     let server_addr =
-        env::var("LUMPER_SERVER_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
+        env::var("BACKEND_SERVER_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
 
     // Initialize tracing subscriber for logging
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
@@ -19,7 +19,7 @@ async fn main() -> Result<(), std::io::Error> {
         .route("/health", get(health_check));
 
     // Start the server
-    info!("Starting Lumper server on {}", &server_addr);
+    info!("Starting Backend server on {}", &server_addr);
     let listener = TcpListener::bind(&server_addr).await?;
     axum::serve(listener, app).await?;
 
@@ -27,9 +27,9 @@ async fn main() -> Result<(), std::io::Error> {
 }
 
 async fn root() -> &'static str {
-    "Welcome to the Lumper server!"
+    "Welcome to the Backend server!"
 }
 
 async fn health_check() -> &'static str {
-    "Lumper server is healthy!"
+    "Backend server is healthy!"
 }
