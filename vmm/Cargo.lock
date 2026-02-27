@@ -181,8 +181,7 @@ checksum = "6800badb6cb2082ffd7b6a67e6125bb39f18782f793520caee8cb8846be06112"
 [[package]]
 name = "linux-loader"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a5e77493808403a6bd56a301a64ea6b9342e36ea845044bf0dfdf56fe52fa08"
+source = "git+https://github.com/rust-vmm/linux-loader?rev=v0.4.0#9539d6dd21fe92f21f7cd25df65bf0911af80815"
 dependencies = [
  "vm-memory",
 ]
