@@ -50,7 +50,7 @@ const CMDLINE_START: u64 = 0x0002_0000;
 /// Maximum size for kernel command line
 const CMDLINE_MAX_SIZE: usize = 4096;
 // Default command line
-const CMDLINE: &str = "console=ttyS0 i8042.nokbd reboot=k panic=1 pci=off";
+const CMDLINE: &str = "console=ttyS0 i8042.nokbd reboot=t panic=1 pci=off";
 
 fn add_e820_entry(
     params: &mut boot_params,
@@ -152,7 +152,7 @@ pub fn kernel_setup(
 
         // Add rdinit to command line
         cmdline
-            .insert_str(" rdinit=/init")
+            .insert_str(" rdinit=/bin/sh")
             .map_err(Error::Cmdline)?;
 
         println!(

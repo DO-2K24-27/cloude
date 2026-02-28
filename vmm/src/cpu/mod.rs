@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
 use std::convert::TryInto;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::{result, u64};
 
@@ -66,6 +67,7 @@ pub(crate) struct Vcpu {
 
     serial: Arc<Mutex<LumperSerial>>,
     virtio_net: Option<Arc<Mutex<VirtioNetDevice>>>,
+    running: Arc<AtomicBool>,
 }
 
 impl Vcpu {
@@ -75,12 +77,14 @@ impl Vcpu {
         index: u64,
         serial: Arc<Mutex<LumperSerial>>,
         virtio_net: Option<Arc<Mutex<VirtioNetDevice>>>,
+        running: Arc<AtomicBool>,
     ) -> Result<Self> {
         Ok(Vcpu {
             index,
             vcpu_fd: vm_fd.create_vcpu(index).map_err(Error::KvmIoctl)?,
             serial,
             virtio_net,
+            running,
         })
     }
 
@@ -230,7 +234,8 @@ impl Vcpu {
                 // The VM stopped (Shutdown ot HLT).
                 VcpuExit::Shutdown | VcpuExit::Hlt => {
                     println!("Guest shutdown: {:?}. Bye!", exit_reason);
-                    unsafe { libc::exit(0) };
+                    self.running.store(false, Ordering::SeqCst);
+                    return;
                 }
 
                 // This is a PIO write, i.e. the guest is trying to write
@@ -292,7 +297,13 @@ impl Vcpu {
                     eprintln!("Unhandled VM-Exit: {:?}", exit_reason);
                 }
             },
-            Err(e) => eprintln!("Emulation error: {}", e),
+            Err(e) => {
+                // EINTR is expected when we send a signal to interrupt KVM_RUN
+                if e.errno() == libc::EINTR {
+                    return;
+                }
+                eprintln!("Emulation error: {}", e);
+            }
         }
     }
 }
