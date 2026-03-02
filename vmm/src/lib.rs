@@ -9,6 +9,7 @@ extern crate vm_memory;
 extern crate vm_superio;
 
 use std::os::fd::AsRawFd;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::{io, path::PathBuf};
@@ -95,6 +96,9 @@ pub struct VMM {
     event_manager: EventManager<Arc<Mutex<dyn MutEventSubscriber>>>,
     virtio_mmio_allocator: AddressAllocator,
     irq_allocator: IrqAllocator,
+    running: Arc<AtomicBool>,
+    vcpu_handles: Vec<thread::JoinHandle<()>>,
+    vcpu_thread_ids: Arc<Mutex<Vec<libc::pthread_t>>>,
 }
 
 pub trait VMInput: std::io::Read + AsRawFd {}
@@ -144,6 +148,9 @@ impl VMM {
             cmdline_components: Vec::new(),
             event_manager,
             irq_allocator: IrqAllocator::new(5),
+            running: Arc::new(AtomicBool::new(true)),
+            vcpu_handles: Vec::new(),
+            vcpu_thread_ids: Arc::new(Mutex::new(Vec::new())),
         };
 
         vmm.configure_io()?;
@@ -243,6 +250,7 @@ impl VMM {
                 index.into(),
                 Arc::clone(&self.serial),
                 self.virtio_net.clone(),
+                Arc::clone(&self.running),
             )
             .map_err(Error::Vcpu)?;
 
@@ -275,20 +283,72 @@ impl VMM {
         Ok(())
     }
 
-    // Run all virtual CPUs.
-    pub fn run(&mut self) {
+    fn start_vcpus(&mut self) {
         for mut vcpu in self.vcpus.drain(..) {
             println!("Starting vCPU {:?}", vcpu.index);
-            let _ = thread::Builder::new().spawn(move || loop {
-                vcpu.run();
-            });
+            let vcpu_running = Arc::clone(&self.running);
+            let thread_ids = Arc::clone(&self.vcpu_thread_ids);
+            let handle = thread::Builder::new()
+                .spawn(move || {
+                    thread_ids
+                        .lock()
+                        .unwrap()
+                        .push(unsafe { libc::pthread_self() });
+
+                    while vcpu_running.load(Ordering::SeqCst) {
+                        vcpu.run();
+                    }
+                })
+                .expect("Failed to spawn vCPU thread");
+            self.vcpu_handles.push(handle);
+        }
+    }
+
+    /// Wait for all vCPU threads to finish, sending SIGUSR1 to interrupt
+    /// any threads blocked in KVM_RUN.
+    fn join_vcpus(&mut self) {
+        let tids = self.vcpu_thread_ids.lock().unwrap();
+        for &tid in tids.iter() {
+            unsafe {
+                libc::pthread_kill(tid, libc::SIGUSR1);
+            }
+        }
+        drop(tids);
+
+        for handle in self.vcpu_handles.drain(..) {
+            let _ = handle.join();
+        }
+        self.vcpu_thread_ids.lock().unwrap().clear();
+    }
+
+    /// Run the VM: start vCPUs, run event loop, and wait for shutdown.
+    pub fn run(&mut self) {
+        self.running.store(true, Ordering::SeqCst);
+
+        // Install a no-op SIGUSR1 handler so pthread_kill interrupts KVM_RUN
+        // with EINTR instead of terminating the process.
+        unsafe {
+            let mut sa: libc::sigaction = std::mem::zeroed();
+            sa.sa_sigaction = empty_signal_handler as usize;
+            sa.sa_flags = 0;
+            libc::sigaction(libc::SIGUSR1, &sa, std::ptr::null_mut());
         }
 
-        loop {
+        self.start_vcpus();
+
+        let running = Arc::clone(&self.running);
+        while running.load(Ordering::SeqCst) {
             self.event_manager
-                .run()
+                .run_with_timeout(100)
                 .expect("event manager loop should live forever");
         }
+
+        self.join_vcpus();
+    }
+
+    /// Stop the VM by signaling all threads to exit.
+    pub fn stop(&self) {
+        self.running.store(false, Ordering::SeqCst);
     }
 
     pub fn configure(
@@ -308,3 +368,6 @@ impl VMM {
         Ok(())
     }
 }
+
+/// No-op signal handler used to interrupt vCPU threads blocked in KVM_RUN.
+extern "C" fn empty_signal_handler(_: libc::c_int) {}
