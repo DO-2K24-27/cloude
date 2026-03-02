@@ -1,0 +1,4 @@
+KERNEL_VERSION=alpine-netboot-3.23.3-vmlinuz-virt
+KERNEL_URL=https://mirrors.vcea.wsu.edu/alpine/latest-stable/releases/x86_64/netboot-3.23.3/vmlinuz-virt
+KERNEL_SHA256=53a7ac3ed9d850039e0b0102149b346c631ea4d32d2c5dfabcbfd5e852ed7a28
+KERNEL_FILENAME=vmlinuz-virt-3.23.3

@@ -30,4 +30,7 @@ target
 
 # Agent built artifacts
 /agent/build/
+/agent/.cache/
+/build/
 *.cpio.gz
+*.log
