@@ -203,7 +203,13 @@ impl VMM {
     }
 
     /// Add a VirtIO network device with TAP backend
-    pub fn add_net_device(&mut self, tap_name: String) -> Result<()> {
+    pub fn add_net_device(
+        &mut self,
+        tap_name: String,
+        guest_ip: Option<&str>,
+        host_ip: Option<&str>,
+        netmask: Option<&str>,
+    ) -> Result<()> {
         let allocated_range: RangeInclusive = self
             .virtio_mmio_allocator
             .allocate(0x1000, 0x1000, AllocPolicy::FirstMatch)
@@ -224,6 +230,11 @@ impl VMM {
         .map_err(Error::Virtio)?;
 
         self.cmdline_components.push(net.cmdline_string());
+
+        if let (Some(g_ip), Some(h_ip), Some(mask)) = (guest_ip, host_ip, netmask) {
+            let ip_cmdline = format!("ip={}::{}:{}::eth0:off", g_ip, h_ip, mask);
+            self.cmdline_components.push(ip_cmdline);
+        }
 
         let virtio_net = Arc::new(Mutex::new(net));
         self.virtio_net = Some(Arc::clone(&virtio_net));

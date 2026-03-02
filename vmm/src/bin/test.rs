@@ -61,7 +61,16 @@ fn main() {
 
     // Add network device if enabled
     if let Some(tap_name) = env::var("TAP_DEVICE").ok() {
-        if let Err(e) = vmm.add_net_device(tap_name) {
+        let guest_ip = env::var("GUEST_IP").ok();
+        let host_ip = env::var("HOST_IP").ok();
+        let netmask = env::var("NETMASK").ok();
+
+        if let Err(e) = vmm.add_net_device(
+            tap_name,
+            guest_ip.as_deref(),
+            host_ip.as_deref(),
+            netmask.as_deref(),
+        ) {
             return eprintln!("Error adding net device: {:?}", e);
         }
     }
