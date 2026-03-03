@@ -18,6 +18,7 @@ dependencies = [
  "log",
  "regex",
  "serde",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
