@@ -1,6 +1,10 @@
 // Usage:
 // KERNEL_PATH=/path/to/kernel INITRAMFS_PATH=/path/to/initramfs cargo run --bin test
 // SERIAL_OUTPUT=/path/to/output.log - optional, to capture serial output
+// TAP_DEVICE=<device_name> - optional, to enable networking with a specific tap device
+// GUEST_IP=<ip_address> - optional, guest IP address
+// HOST_IP=<ip_address> - optional, host IP address
+// NETMASK=<mask> - optional, network mask
 
 use std::env;
 use vmm::{VMInput, VMM};
