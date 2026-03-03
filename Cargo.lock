@@ -16,6 +16,7 @@ dependencies = [
  "axum",
  "initramfs-builder",
  "serde",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",

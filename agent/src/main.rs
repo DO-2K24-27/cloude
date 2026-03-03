@@ -1,6 +1,7 @@
 use agent::builder::image::Builder;
 use agent::qemu::QemuRunner;
 use agent::runtimes::{LanguageRuntime, runtime_from_language};
+use agent::serial::read_serial_config;
 use anyhow::Result;
 use axum::{
     Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::get,
@@ -45,8 +46,10 @@ struct ErrorResponse {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
-    let server_addr =
-        env::var("AGENT_SERVER_ADDR").unwrap_or_else(|_| "127.0.0.1:3001".to_string());
+    info!("Agent starting - reading IP configuration from serial port");
+    let serial_config = read_serial_config().await?;
+    let server_addr = format!("{}:{}", serial_config.ip, serial_config.port);
+
     let work_dir =
         PathBuf::from(env::var("AGENT_WORK_DIR").unwrap_or_else(|_| "build".to_string()));
     let kernel_path = resolve_kernel_path()?;

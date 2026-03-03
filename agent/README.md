@@ -17,36 +17,57 @@ qemu-system-x86_64 --version
 cargo --version
 curl --version
 
-# 2) Fetch pinned kernel artifact
+# 2) Run unit tests to ensure everything works
+cargo test -p agent
+
+# 3) Fetch pinned kernel artifact
 ./agent/scripts/fetch-kernel.sh
 
-# 3) Run agent
-export AGENT_KERNEL_PATH="$(pwd)/agent/.cache/kernels/vmlinuz-virt-3.23.3"
-test -f "$AGENT_KERNEL_PATH" || (echo "Kernel not found: $AGENT_KERNEL_PATH" && exit 1)
-
-cargo run -p agent
+# 4) Run agent (requires serial port communication)
+AGENT_KERNEL_PATH="$(pwd)/agent/.cache/kernels/vmlinuz-virt-3.23.3" cargo run -p agent
 ```
 
-In another terminal:
+The agent will wait for IP configuration from the serial port before starting the HTTP server.
+
+**For testing purposes**, in another terminal, provide the IP configuration using a test file:
 
 ```bash
-# 4) Health check
+# Create test file that the agent will check first
+echo "IP:127.0.0.1:3001" > /tmp/agent_serial_test
+
+# The agent will automatically use this file if it exists
+```
+
+**Note**: This test file solution is temporary and will be replaced by real serial port communication in production.
+
+Once the agent receives the IP configuration:
+
+```bash
+# 5) Health check (use the IP from serial configuration)
 curl -sS http://127.0.0.1:3001/health && echo
 
-# 5) Execute code
+# 6) Test Python execution
 curl -sS -X POST http://127.0.0.1:3001/execute \
   -H 'content-type: application/json' \
   -d '{"language":"python","code":"print(1+1)"}'
 ```
 
+Expected response format:
+```json
+{"job_id":"job-1","exit_code":0,"stdout":"2\n","stderr":""}
+```
+
 ## Environment variables
 
 - `AGENT_KERNEL_PATH` (required)
-- `AGENT_SERVER_ADDR` (default: `127.0.0.1:3001`)
 - `AGENT_WORK_DIR` (default: `build`)
 - `AGENT_QEMU_TIMEOUT_SECS` (default: `120`)
 
 ## API
+
+`GET /health`
+
+Response: `ok`
 
 `POST /execute`
 
