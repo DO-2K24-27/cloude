@@ -54,7 +54,6 @@ impl Builder {
             .await
             .context("Failed to build initramfs")?;
 
-
         Ok(output_path)
     }
 }

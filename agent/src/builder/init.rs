@@ -9,7 +9,9 @@ impl InitScriptGenerator {
         script.push_str("mount -t proc proc /proc\n");
         script.push_str("mount -t sysfs sysfs /sys\n");
         script.push_str("mount -t devtmpfs dev /dev\n\n");
-        script.push_str("export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n\n");
+        script.push_str(
+            "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n\n",
+        );
 
         if let Some(compile_cmd) = runtime.compile_command() {
             script.push_str(&format!("{}\n", compile_cmd));

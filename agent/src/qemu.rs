@@ -119,14 +119,13 @@ impl QemuRunner {
     }
 }
 
-use std::sync::OnceLock;
 use regex::Regex;
+use std::sync::OnceLock;
 
 static KERNEL_LOG_RE: OnceLock<Regex> = OnceLock::new();
 
 fn is_kernel_log_line(line: &str) -> bool {
-    let re = KERNEL_LOG_RE.get_or_init(|| {
-        Regex::new(r"^\[\s*\d+\.\d+\]").expect("Invalid kernel log regex")
-    });
+    let re = KERNEL_LOG_RE
+        .get_or_init(|| Regex::new(r"^\[\s*\d+\.\d+\]").expect("Invalid kernel log regex"));
     re.is_match(line.trim_start())
 }

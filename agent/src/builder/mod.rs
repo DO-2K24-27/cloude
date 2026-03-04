@@ -1,2 +1,2 @@
-pub mod init;
 pub mod image;
+pub mod init;
