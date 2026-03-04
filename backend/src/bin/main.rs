@@ -4,9 +4,11 @@ use axum::{
     http::StatusCode,
     routing::{get, post},
 };
+use backend::ip_manager::IpManager;
 use backend::vm_manager::VmManager;
 use serde::{Deserialize, Serialize};
 use std::env;
+use std::net::Ipv4Addr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::{Level, info};
@@ -38,8 +40,17 @@ async fn main() -> Result<(), std::io::Error> {
     // Initialize tracing subscriber for logging
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
+    // Initialize IP pool (172.17.0.2 to 172.17.0.254)
+    let ip_file = env::var("BACKEND_IP_FILE").unwrap_or_else(|_| "ip_allocations.json".to_string());
+    let start_ip = Ipv4Addr::new(172, 17, 0, 2);
+    let end_ip = Ipv4Addr::new(172, 17, 0, 254);
+    let ip_manager = IpManager::new(&ip_file, start_ip, end_ip)
+        .expect("Failed to initialize IP manager");
+    
+    info!("IP pool initialized: {} - {}", start_ip, end_ip);
+
     // Create VM manager
-    let vm_manager = Arc::new(VmManager::new());
+    let vm_manager = Arc::new(VmManager::new(ip_manager));
     let state = AppState { vm_manager };
 
     // Create a simple router with a health check endpoint
@@ -72,14 +83,20 @@ async fn execute(
     info!("Received execute request for language: {}", payload.language);
     info!("Code: {}", payload.code);
 
-    // Placeholder
+    // Generate a unique ID for the VM
     let vm_id = format!("vm-{}", std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs());
 
-    // Mocked IP for now (will be retrieved from IP pool later)
-    let vm_ip = "172.17.0.2".to_string();
+    // Allocate IP from pool
+    let vm_ip = state.vm_manager.allocate_ip(&vm_id)
+        .map_err(|e| {
+            tracing::error!("Failed to allocate IP: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    
+    info!("Allocated IP {} for VM {}", vm_ip, vm_id);
 
     // Send code to VMM
     state.vm_manager

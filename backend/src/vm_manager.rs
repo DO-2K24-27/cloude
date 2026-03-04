@@ -1,14 +1,46 @@
+use crate::ip_manager::IpManager;
+use std::sync::Mutex;
 use tracing::info;
 
 /// VM manager that uses the VMM library
 pub struct VmManager {
-    // For now, we just store the configuration
-    // Later we will store active VMM instances
+    // IP pool manager for allocating IPs to VMs
+    ip_manager: Mutex<IpManager>,
 }
 
 impl VmManager {
-    pub fn new() -> Self {
-        Self {}
+    pub fn new(ip_manager: IpManager) -> Self {
+        Self {
+            ip_manager: Mutex::new(ip_manager),
+        }
+    }
+
+    /// Allocates an IP address for a new VM
+    /// 
+    /// # Arguments
+    /// * `vm_id` - Unique identifier for the VM
+    /// 
+    /// # Returns
+    /// The allocated IP address as a String
+    pub fn allocate_ip(&self, vm_id: &str) -> Result<String, String> {
+        self.ip_manager
+            .lock()
+            .unwrap()
+            .allocate_ip(vm_id)
+            .map_err(|e| format!("Failed to allocate IP: {}", e))
+    }
+
+    /// Releases the IP address associated with a VM
+    /// 
+    /// # Arguments
+    /// * `vm_id` - Unique identifier for the VM
+    pub fn release_ip(&self, vm_id: &str) -> Result<(), String> {
+        self.ip_manager
+            .lock()
+            .unwrap()
+            .release_ip(vm_id)
+            .map_err(|e| format!("Failed to release IP: {}", e))?;
+        Ok(())
     }
 
     /// Creates a VM and sends code to execute
