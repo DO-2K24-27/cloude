@@ -51,7 +51,7 @@ impl QemuRunner {
             .spawn()
             .context("Failed to spawn QEMU. Is it installed?")?;
 
-        let stdout = child.stdout.take().expect("Failed to open QEMU stdout");
+        let stdout = child.stdout.take().context("Failed to open QEMU stdout")?;
         let mut reader = BufReader::new(stdout).lines();
 
         let mut captured_output = String::new();
@@ -119,13 +119,14 @@ impl QemuRunner {
     }
 }
 
+use std::sync::OnceLock;
+use regex::Regex;
+
+static KERNEL_LOG_RE: OnceLock<Regex> = OnceLock::new();
+
 fn is_kernel_log_line(line: &str) -> bool {
-    let s = line.trim_start();
-    if !s.starts_with('[') {
-        return false;
-    }
-    match s.find(']') {
-        Some(i) => i > 2,
-        None => false,
-    }
+    let re = KERNEL_LOG_RE.get_or_init(|| {
+        Regex::new(r"^\[\s*\d+\.\d+\]").expect("Invalid kernel log regex")
+    });
+    re.is_match(line.trim_start())
 }

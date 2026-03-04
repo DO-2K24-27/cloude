@@ -12,7 +12,14 @@ impl InitScriptGenerator {
         script.push_str("export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n\n");
 
         if let Some(compile_cmd) = runtime.compile_command() {
-            script.push_str(&format!("{} || exit 1\n", compile_cmd));
+            script.push_str(&format!("{}\n", compile_cmd));
+            script.push_str("COMPILE_EXIT=$?\n");
+            script.push_str("if [ $COMPILE_EXIT -ne 0 ]; then\n");
+            script.push_str("  echo '--- PROGRAM OUTPUT ---'\n");
+            script.push_str("  echo '--- END OUTPUT ---'\n");
+            script.push_str("  echo \"Exit code: $COMPILE_EXIT\"\n");
+            script.push_str("  poweroff -f 2>/dev/null || exit $COMPILE_EXIT\n");
+            script.push_str("fi\n");
         }
 
         script.push_str("echo '--- PROGRAM OUTPUT ---'\n");
@@ -60,6 +67,8 @@ mod tests {
         let runtime = RustRuntime;
         let script = InitScriptGenerator::generate_script(&runtime, "/lambda/code.rs");
         assert!(script.contains("rustc -o /lambda/bin /lambda/code.rs"));
+        assert!(script.contains("COMPILE_EXIT=$?"));
+        assert!(script.contains("if [ $COMPILE_EXIT -ne 0 ]; then"));
         assert!(script.contains("/lambda/bin"));
     }
 }

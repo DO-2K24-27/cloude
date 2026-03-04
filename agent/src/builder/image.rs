@@ -21,18 +21,21 @@ impl Builder {
         source_code_path: &Path,
     ) -> Result<PathBuf> {
         tokio::fs::create_dir_all(&self.work_dir).await?;
+        let build_id = uuid::Uuid::new_v4().to_string();
+        let build_dir = self.work_dir.join(build_id);
+        tokio::fs::create_dir_all(&build_dir).await?;
 
         let init_script_content = InitScriptGenerator::generate_script(
             runtime,
             &format!("/lambda/code.{}", runtime.source_extension()),
         );
 
-        let init_script_path = self.work_dir.join("init.sh");
+        let init_script_path = build_dir.join("init.sh");
         tokio::fs::write(&init_script_path, init_script_content)
             .await
             .context("Failed to write init script")?;
 
-        let output_path = self.work_dir.join(format!("agent-{}.cpio.gz", runtime.source_extension()));
+        let output_path = build_dir.join(format!("agent-{}.cpio.gz", runtime.source_extension()));
         let base_image = runtime.base_image();
 
         let builder = InitramfsBuilder::new()
@@ -50,6 +53,7 @@ impl Builder {
             .build(&output_path)
             .await
             .context("Failed to build initramfs")?;
+
 
         Ok(output_path)
     }
