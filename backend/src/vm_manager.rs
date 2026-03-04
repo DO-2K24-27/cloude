@@ -1,17 +1,43 @@
 use crate::ip_manager::IpManager;
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use std::env;
 use std::sync::Mutex;
-use tracing::info;
+use tracing::{info, error};
 
-/// VM manager that uses the VMM library
+/// VM manager that coordinates with the agent
 pub struct VmManager {
     // IP pool manager for allocating IPs to VMs
     ip_manager: Mutex<IpManager>,
+    // HTTP client for communicating with the agent
+    http_client: Client,
+    // Agent server address
+    agent_addr: String,
+}
+
+#[derive(Serialize)]
+struct AgentExecuteRequest {
+    language: String,
+    code: String,
+}
+
+#[derive(Deserialize)]
+struct AgentExecuteResponse {
+    job_id: String,
+    exit_code: i32,
+    stdout: String,
+    stderr: String,
 }
 
 impl VmManager {
     pub fn new(ip_manager: IpManager) -> Self {
+        let agent_addr = env::var("BACKEND_AGENT_ADDR")
+            .unwrap_or_else(|_| "http://127.0.0.1:3001".to_string());
+        
         Self {
             ip_manager: Mutex::new(ip_manager),
+            http_client: Client::new(),
+            agent_addr,
         }
     }
 
@@ -43,11 +69,11 @@ impl VmManager {
         Ok(())
     }
 
-    /// Creates a VM and sends code to execute
+    /// Sends code to the agent for execution
     /// 
     /// # Arguments
-    /// * `vm_id` - Unique identifier for the VM
-    /// * `vm_ip` - IP address to assign to the VM
+    /// * `vm_id` - Unique identifier for the VM (for tracking)
+    /// * `vm_ip` - IP address assigned to this execution (for tracking)
     /// * `language` - Code language (python, node, rust)
     /// * `code` - Source code to execute
     pub async fn send_code_to_vm(
@@ -58,20 +84,57 @@ impl VmManager {
         code: &str,
     ) -> Result<(), String> {
         info!(
-            "Sending code to VMM - VM ID: {}, IP: {}, Language: {}",
+            "Forwarding execution request to agent - VM ID: {}, IP: {}, Language: {}",
             vm_id, vm_ip, language
         );
         
-        // TODO: Here we will:
-        // 1. Create a VMM::new() instance
-        // 2. Configure network with vm.add_net_device(vm_ip)
-        // 3. Configure kernel and initramfs with the code
-        // 4. Start the VM with vm.run()
+        let agent_url = format!("{}/execute", self.agent_addr);
         
-        info!("Code received (length: {} bytes)", code.len());
-        info!("Code preview: {}", &code[..code.len().min(100)]);
+        let request = AgentExecuteRequest {
+            language: language.to_string(),
+            code: code.to_string(),
+        };
         
-        // For now, we simulate sending
+        // Send request to agent
+        let response = self.http_client
+            .post(&agent_url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to send request to agent: {}", e))?;
+        
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            error!("Agent returned error {}: {}", status, error_text);
+            return Err(format!("Agent execution failed: {} - {}", status, error_text));
+        }
+        
+        let agent_response: AgentExecuteResponse = response.json()
+            .await
+            .map_err(|e| format!("Failed to parse agent response: {}", e))?;
+        
+        info!(
+            "Agent completed execution - Job ID: {}, Exit code: {}",
+            agent_response.job_id, agent_response.exit_code
+        );
+        
+        if !agent_response.stdout.is_empty() {
+            info!("stdout: {}", agent_response.stdout);
+        }
+        
+        if !agent_response.stderr.is_empty() {
+            info!("stderr: {}", agent_response.stderr);
+        }
+        
+        if agent_response.exit_code != 0 {
+            return Err(format!(
+                "Code execution failed with exit code {}",
+                agent_response.exit_code
+            ));
+        }
+        
         Ok(())
     }
 }
