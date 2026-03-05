@@ -1,3 +1,4 @@
+use anyhow::{Context, Result};
 use crate::ip_manager::IpManager;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -30,6 +31,25 @@ struct AgentExecuteResponse {
     stderr: String,
 }
 
+/// Truncates a string to at most `max_bytes` while respecting UTF-8 character boundaries.
+/// Returns a slice up to the last valid character boundary at or before `max_bytes`.
+fn truncate_to_valid_utf8(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    
+    // Find the last character boundary at or before max_bytes
+    let mut last_valid = 0;
+    for (byte_idx, _) in s.char_indices() {
+        if byte_idx > max_bytes {
+            break;
+        }
+        last_valid = byte_idx;
+    }
+    
+    &s[..last_valid]
+}
+
 impl VmManager {
     pub fn new(ip_manager: IpManager) -> Self {
         let agent_addr = env::var("BACKEND_AGENT_ADDR")
@@ -49,25 +69,29 @@ impl VmManager {
     /// 
     /// # Returns
     /// The allocated IP address as a String
-    pub fn allocate_ip(&self, vm_id: &str) -> Result<String, String> {
-        self.ip_manager
+    pub fn allocate_ip(&self, vm_id: &str) -> Result<String> {
+        let ip = self.ip_manager
             .lock()
-            .map_err(|e| format!("IP manager mutex poisoned: {}", e))?
+            .map_err(|e| anyhow::anyhow!("IP manager mutex poisoned: {}", e))?
             .allocate_ip(vm_id)
-            .map_err(|e| format!("Failed to allocate IP: {}", e))
+            .context("Failed to allocate IP")?;
+        Ok(ip)
     }
 
     /// Releases the IP address associated with a VM
     /// 
     /// # Arguments
     /// * `vm_id` - Unique identifier for the VM
-    pub fn release_ip(&self, vm_id: &str) -> Result<(), String> {
-        self.ip_manager
+    /// 
+    /// # Returns
+    /// `Ok(true)` if an IP was released, `Ok(false)` if the VM had no IP allocated
+    pub fn release_ip(&self, vm_id: &str) -> Result<bool> {
+        let released = self.ip_manager
             .lock()
-            .map_err(|e| format!("IP manager mutex poisoned: {}", e))?
+            .map_err(|e| anyhow::anyhow!("IP manager mutex poisoned: {}", e))?
             .release_ip(vm_id)
-            .map_err(|e| format!("Failed to release IP: {}", e))?;
-        Ok(())
+            .context("Failed to release IP")?;
+        Ok(released)
     }
 
     /// Sends code to the agent for execution
@@ -83,7 +107,7 @@ impl VmManager {
         vm_ip: &str,
         language: &str,
         code: &str,
-    ) -> Result<(), String> {
+    ) -> Result<()> {
         info!(
             "Forwarding execution request to agent - VM ID: {}, IP: {}, Language: {}",
             vm_id, vm_ip, language
@@ -109,19 +133,19 @@ impl VmManager {
             .timeout(Duration::from_secs(timeout_secs))
             .send()
             .await
-            .map_err(|e| format!("Failed to send request to agent: {}", e))?;
+            .context("Failed to send request to agent")?;
         
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await
                 .unwrap_or_else(|_| "Unknown error".to_string());
             error!("Agent returned error {}: {}", status, error_text);
-            return Err(format!("Agent execution failed: {} - {}", status, error_text));
+            return Err(anyhow::anyhow!("Agent execution failed: {} - {}", status, error_text));
         }
         
         let agent_response: AgentExecuteResponse = response.json()
             .await
-            .map_err(|e| format!("Failed to parse agent response: {}", e))?;
+            .context("Failed to parse agent response")?;
         
         info!(
             "Agent completed execution - Job ID: {}, Exit code: {}",
@@ -136,7 +160,7 @@ impl VmManager {
             if stdout_len <= MAX_OUTPUT_LEN {
                 debug!("stdout ({} bytes): {}", stdout_len, agent_response.stdout);
             } else {
-                let truncated = &agent_response.stdout[..MAX_OUTPUT_LEN];
+                let truncated = truncate_to_valid_utf8(&agent_response.stdout, MAX_OUTPUT_LEN);
                 debug!("stdout ({} bytes, truncated): {}...(truncated)", stdout_len, truncated);
             }
         }
@@ -146,13 +170,13 @@ impl VmManager {
             if stderr_len <= MAX_OUTPUT_LEN {
                 debug!("stderr ({} bytes): {}", stderr_len, agent_response.stderr);
             } else {
-                let truncated = &agent_response.stderr[..MAX_OUTPUT_LEN];
+                let truncated = truncate_to_valid_utf8(&agent_response.stderr, MAX_OUTPUT_LEN);
                 debug!("stderr ({} bytes, truncated): {}...(truncated)", stderr_len, truncated);
             }
         }
         
         if agent_response.exit_code != 0 {
-            return Err(format!(
+            return Err(anyhow::anyhow!(
                 "Code execution failed with exit code {}",
                 agent_response.exit_code
             ));

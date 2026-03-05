@@ -1,3 +1,4 @@
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
@@ -23,38 +24,6 @@ pub struct IpManager {
     lock: Mutex<()>,
 }
 
-/// Errors that can occur during IP management operations.
-#[derive(Debug)]
-pub enum IpManagerError {
-    Io(std::io::Error),
-    Json(serde_json::Error),
-    PoolExhausted,
-}
-
-impl std::fmt::Display for IpManagerError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            IpManagerError::Io(e) => write!(f, "IO error: {}", e),
-            IpManagerError::Json(e) => write!(f, "JSON error: {}", e),
-            IpManagerError::PoolExhausted => write!(f, "IP pool exhausted"),
-        }
-    }
-}
-
-impl std::error::Error for IpManagerError {}
-
-impl From<std::io::Error> for IpManagerError {
-    fn from(err: std::io::Error) -> Self {
-        IpManagerError::Io(err)
-    }
-}
-
-impl From<serde_json::Error> for IpManagerError {
-    fn from(err: serde_json::Error) -> Self {
-        IpManagerError::Json(err)
-    }
-}
-
 impl IpManager {
     /// Creates a new `IpManager` or loads an existing state from the given file path.
     /// 
@@ -62,7 +31,7 @@ impl IpManager {
     /// * `file_path` - Path to the JSON file used for persistence.
     /// * `start_ip` - The first IP address available in the allocation pool.
     /// * `end_ip` - The last IP address available in the allocation pool.
-    pub fn new<P: AsRef<Path>>(file_path: P, start_ip: Ipv4Addr, end_ip: Ipv4Addr) -> Result<Self, IpManagerError> {
+    pub fn new<P: AsRef<Path>>(file_path: P, start_ip: Ipv4Addr, end_ip: Ipv4Addr) -> Result<Self> {
         let manager = Self {
             file_path: file_path.as_ref().to_path_buf(),
             start_ip: u32::from(start_ip),
@@ -71,7 +40,8 @@ impl IpManager {
         };
 
         if !manager.file_path.exists() {
-            manager.write_state(&IpManagerState::default())?;
+            manager.write_state(&IpManagerState::default())
+                .context("Failed to create initial state file")?;
         }
 
         Ok(manager)
@@ -79,13 +49,13 @@ impl IpManager {
 
     /// Reads the current IP allocation state from the JSON file.
     /// If the file does not exist or is empty, it returns a new default state.
-    fn read_state(&self) -> Result<IpManagerState, IpManagerError> {
+    fn read_state(&self) -> Result<IpManagerState> {
         let mut file = match File::open(&self.file_path) {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(IpManagerState::default());
             }
-            Err(e) => return Err(e.into()),
+            Err(e) => return Err(e).context("Failed to open state file"),
         };
 
         let mut contents = String::new();
@@ -104,15 +74,19 @@ impl IpManager {
     /// 
     /// # Arguments
     /// * `state` - The current allocation state to save over the previous one.
-    fn write_state(&self, state: &IpManagerState) -> Result<(), IpManagerError> {
-        let json = serde_json::to_string_pretty(state)?;
+    fn write_state(&self, state: &IpManagerState) -> Result<()> {
+        let json = serde_json::to_string_pretty(state)
+            .context("Failed to serialize state")?;
         let mut file = OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
-            .open(&self.file_path)?;
-        file.write_all(json.as_bytes())?;
-        file.sync_all()?;
+            .open(&self.file_path)
+            .context("Failed to open state file for writing")?;
+        file.write_all(json.as_bytes())
+            .context("Failed to write state to file")?;
+        file.sync_all()
+            .context("Failed to sync file")?;
         Ok(())
     }
 
@@ -121,7 +95,7 @@ impl IpManager {
     /// 
     /// # Arguments
     /// * `vm_id` - A unique identifier for the Virtual Machine.
-    pub fn allocate_ip(&self, vm_id: &str) -> Result<String, IpManagerError> {
+    pub fn allocate_ip(&self, vm_id: &str) -> Result<String> {
         let _guard = self.lock.lock().unwrap();
         let mut state = self.read_state()?;
 
@@ -143,7 +117,8 @@ impl IpManager {
             current_ip_val += 1;
         }
 
-        let ip = selected_ip.ok_or(IpManagerError::PoolExhausted)?;
+        let ip = selected_ip
+            .ok_or_else(|| anyhow::anyhow!("IP pool exhausted"))?;
         state.allocations.insert(vm_id.to_string(), ip.clone());
         
         self.write_state(&state)?;
@@ -157,7 +132,7 @@ impl IpManager {
     /// * `vm_id` - The unique identifier of the Virtual Machine.
     /// 
     /// Returns `true` if an IP was successfully released, `false` if the VM had no IP allocated.
-    pub fn release_ip(&self, vm_id: &str) -> Result<bool, IpManagerError> {
+    pub fn release_ip(&self, vm_id: &str) -> Result<bool> {
         let _guard = self.lock.lock().unwrap();
         let mut state = self.read_state()?;
 
@@ -210,7 +185,8 @@ mod tests {
 
         // 4th allocation should fail
         let res = manager.allocate_ip("vm-4");
-        assert!(matches!(res, Err(IpManagerError::PoolExhausted)));
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("IP pool exhausted"));
     }
 
     #[test]

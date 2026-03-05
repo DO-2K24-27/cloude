@@ -1,3 +1,4 @@
+use anyhow::Context;
 use axum::{
     Json, Router,
     extract::State,
@@ -62,7 +63,8 @@ async fn main() -> Result<(), std::io::Error> {
         });
     
     let ip_manager = IpManager::new(&ip_file, start_ip, end_ip)
-        .expect("Failed to initialize IP manager");
+        .context("Failed to initialize IP manager")
+        .expect("Critical error during startup");
     
     info!("IP pool initialized: {} - {}", start_ip, end_ip);
 
@@ -93,11 +95,11 @@ async fn health_check() -> &'static str {
     "Backend server is healthy!"
 }
 
-async fn execute(
-    State(state): State<AppState>,
-    Json(payload): Json<ExecuteRequest>,
-) -> Result<Json<ExecuteResponse>, StatusCode> {
-    // Generate a unique ID for the VM using timestamp + short random suffix
+/// Generates a unique VM identifier using timestamp and random suffix
+/// 
+/// Format: vm-{timestamp_hex}-{random_4hex}
+/// Example: vm-65e7a3f1-a4b2
+fn generate_vm_id() -> String {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -108,7 +110,14 @@ async fn execute(
     hasher.write_u64(timestamp);
     let random_suffix = hasher.finish() & 0xFFFF; // 4 hex digits
     
-    let vm_id = format!("vm-{:x}-{:04x}", timestamp, random_suffix);
+    format!("vm-{:x}-{:04x}", timestamp, random_suffix)
+}
+
+async fn execute(
+    State(state): State<AppState>,
+    Json(payload): Json<ExecuteRequest>,
+) -> Result<Json<ExecuteResponse>, StatusCode> {
+    let vm_id = generate_vm_id();
 
     info!(
         "Received execute request - VM ID: {}, Language: {}, Code size: {} bytes",
@@ -133,11 +142,20 @@ async fn execute(
         .map_err(|e| {
             tracing::error!("Failed to send code to VM: {}", e);
             // Release the allocated IP on failure
-            if let Err(release_err) = state.vm_manager.release_ip(&vm_id) {
-                tracing::error!("Failed to release IP {} for VM {}: {}", vm_ip, vm_id, release_err);
+            match state.vm_manager.release_ip(&vm_id) {
+                Ok(true) => tracing::info!("Released IP {} for VM {} after failure", vm_ip, vm_id),
+                Ok(false) => tracing::warn!("No IP to release for VM {} (not allocated)", vm_id),
+                Err(release_err) => tracing::error!("Failed to release IP {} for VM {}: {}", vm_ip, vm_id, release_err),
             }
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
+
+    // Release the IP after successful execution
+    match state.vm_manager.release_ip(&vm_id) {
+        Ok(true) => tracing::info!("Released IP {} for VM {} after successful execution", vm_ip, vm_id),
+        Ok(false) => tracing::warn!("No IP to release for VM {} after execution (not allocated)", vm_id),
+        Err(release_err) => tracing::error!("Failed to release IP {} for VM {} after successful execution: {}", vm_ip, vm_id, release_err),
+    }
 
     Ok(Json(ExecuteResponse {
         vm_id,
