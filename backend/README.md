@@ -34,6 +34,7 @@ curl -sS -X POST http://127.0.0.1:8080/execute \
 
 - `BACKEND_SERVER_ADDR` (default: `127.0.0.1:8080`)
 - `BACKEND_AGENT_ADDR` (default: `http://127.0.0.1:3001`)
+- `BACKEND_AGENT_TIMEOUT_SECS` (default: `120`)
 - `BACKEND_IP_FILE` (default: `ip_allocations.json`)
 - `BACKEND_IP_START` (default: `172.17.0.2`)
 - `BACKEND_IP_END` (default: `172.17.0.254`)
@@ -76,7 +77,7 @@ Supported languages: `python`, `node`, `rust`
 
 ## Architecture
 
-```
+```text
 Client → Backend (HTTP:8080) → Agent (HTTP:3001) → QEMU/VMM
          ↓
          Allocates unique IP

@@ -7,7 +7,9 @@ use axum::{
 use backend::ip_manager::IpManager;
 use backend::vm_manager::VmManager;
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::RandomState;
 use std::env;
+use std::hash::{BuildHasher, Hasher};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -40,10 +42,25 @@ async fn main() -> Result<(), std::io::Error> {
     // Initialize tracing subscriber for logging
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
-    // Initialize IP pool (172.17.0.2 to 172.17.0.254)
+    // Initialize IP pool with configurable range
     let ip_file = env::var("BACKEND_IP_FILE").unwrap_or_else(|_| "ip_allocations.json".to_string());
-    let start_ip = Ipv4Addr::new(172, 17, 0, 2);
-    let end_ip = Ipv4Addr::new(172, 17, 0, 254);
+    
+    let start_ip = env::var("BACKEND_IP_START")
+        .ok()
+        .and_then(|s| s.parse::<Ipv4Addr>().ok())
+        .unwrap_or_else(|| {
+            info!("Using default start IP: 172.17.0.2");
+            Ipv4Addr::new(172, 17, 0, 2)
+        });
+    
+    let end_ip = env::var("BACKEND_IP_END")
+        .ok()
+        .and_then(|s| s.parse::<Ipv4Addr>().ok())
+        .unwrap_or_else(|| {
+            info!("Using default end IP: 172.17.0.254");
+            Ipv4Addr::new(172, 17, 0, 254)
+        });
+    
     let ip_manager = IpManager::new(&ip_file, start_ip, end_ip)
         .expect("Failed to initialize IP manager");
     
@@ -80,14 +97,25 @@ async fn execute(
     State(state): State<AppState>,
     Json(payload): Json<ExecuteRequest>,
 ) -> Result<Json<ExecuteResponse>, StatusCode> {
-    info!("Received execute request for language: {}", payload.language);
-    info!("Code: {}", payload.code);
-
-    // Generate a unique ID for the VM
-    let vm_id = format!("vm-{}", std::time::SystemTime::now()
+    // Generate a unique ID for the VM using timestamp + short random suffix
+    let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
-        .as_secs());
+        .as_secs();
+    
+    let random_state = RandomState::new();
+    let mut hasher = random_state.build_hasher();
+    hasher.write_u64(timestamp);
+    let random_suffix = hasher.finish() & 0xFFFF; // 4 hex digits
+    
+    let vm_id = format!("vm-{:x}-{:04x}", timestamp, random_suffix);
+
+    info!(
+        "Received execute request - VM ID: {}, Language: {}, Code size: {} bytes",
+        vm_id,
+        payload.language,
+        payload.code.len()
+    );
 
     // Allocate IP from pool
     let vm_ip = state.vm_manager.allocate_ip(&vm_id)
@@ -104,6 +132,10 @@ async fn execute(
         .await
         .map_err(|e| {
             tracing::error!("Failed to send code to VM: {}", e);
+            // Release the allocated IP on failure
+            if let Err(release_err) = state.vm_manager.release_ip(&vm_id) {
+                tracing::error!("Failed to release IP {} for VM {}: {}", vm_ip, vm_id, release_err);
+            }
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 

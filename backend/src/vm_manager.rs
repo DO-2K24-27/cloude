@@ -3,7 +3,8 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::sync::Mutex;
-use tracing::{info, error};
+use std::time::Duration;
+use tracing::{info, error, debug};
 
 /// VM manager that coordinates with the agent
 pub struct VmManager {
@@ -51,7 +52,7 @@ impl VmManager {
     pub fn allocate_ip(&self, vm_id: &str) -> Result<String, String> {
         self.ip_manager
             .lock()
-            .unwrap()
+            .map_err(|e| format!("IP manager mutex poisoned: {}", e))?
             .allocate_ip(vm_id)
             .map_err(|e| format!("Failed to allocate IP: {}", e))
     }
@@ -63,7 +64,7 @@ impl VmManager {
     pub fn release_ip(&self, vm_id: &str) -> Result<(), String> {
         self.ip_manager
             .lock()
-            .unwrap()
+            .map_err(|e| format!("IP manager mutex poisoned: {}", e))?
             .release_ip(vm_id)
             .map_err(|e| format!("Failed to release IP: {}", e))?;
         Ok(())
@@ -95,10 +96,17 @@ impl VmManager {
             code: code.to_string(),
         };
         
-        // Send request to agent
+        // Get timeout from environment or use default of 120 seconds
+        let timeout_secs = env::var("BACKEND_AGENT_TIMEOUT_SECS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(120);
+        
+        // Send request to agent with timeout
         let response = self.http_client
             .post(&agent_url)
             .json(&request)
+            .timeout(Duration::from_secs(timeout_secs))
             .send()
             .await
             .map_err(|e| format!("Failed to send request to agent: {}", e))?;
@@ -120,12 +128,27 @@ impl VmManager {
             agent_response.job_id, agent_response.exit_code
         );
         
+        // Log truncated output at debug level to avoid leaking secrets or huge payloads
+        const MAX_OUTPUT_LEN: usize = 200;
+        
         if !agent_response.stdout.is_empty() {
-            info!("stdout: {}", agent_response.stdout);
+            let stdout_len = agent_response.stdout.len();
+            if stdout_len <= MAX_OUTPUT_LEN {
+                debug!("stdout ({} bytes): {}", stdout_len, agent_response.stdout);
+            } else {
+                let truncated = &agent_response.stdout[..MAX_OUTPUT_LEN];
+                debug!("stdout ({} bytes, truncated): {}...(truncated)", stdout_len, truncated);
+            }
         }
         
         if !agent_response.stderr.is_empty() {
-            info!("stderr: {}", agent_response.stderr);
+            let stderr_len = agent_response.stderr.len();
+            if stderr_len <= MAX_OUTPUT_LEN {
+                debug!("stderr ({} bytes): {}", stderr_len, agent_response.stderr);
+            } else {
+                let truncated = &agent_response.stderr[..MAX_OUTPUT_LEN];
+                debug!("stderr ({} bytes, truncated): {}...(truncated)", stderr_len, truncated);
+            }
         }
         
         if agent_response.exit_code != 0 {
