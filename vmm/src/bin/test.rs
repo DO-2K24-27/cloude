@@ -1,6 +1,10 @@
 // Usage:
 // KERNEL_PATH=/path/to/kernel INITRAMFS_PATH=/path/to/initramfs cargo run --bin test
 // SERIAL_OUTPUT=/path/to/output.log - optional, to capture serial output
+// TAP_DEVICE=<device_name> - optional, to enable networking with a specific tap device
+// GUEST_IP=<ip_address> - optional, guest IP address
+// HOST_IP=<ip_address> - optional, host IP address
+// NETMASK=<mask> - optional, network mask
 
 use std::env;
 use vmm::{VMInput, VMM};
@@ -61,7 +65,16 @@ fn main() {
 
     // Add network device if enabled
     if let Some(tap_name) = env::var("TAP_DEVICE").ok() {
-        if let Err(e) = vmm.add_net_device(tap_name) {
+        let guest_ip = env::var("GUEST_IP").ok();
+        let host_ip = env::var("HOST_IP").ok();
+        let netmask = env::var("NETMASK").ok();
+
+        if let Err(e) = vmm.add_net_device(
+            tap_name,
+            guest_ip.as_deref(),
+            host_ip.as_deref(),
+            netmask.as_deref(),
+        ) {
             return eprintln!("Error adding net device: {:?}", e);
         }
     }
