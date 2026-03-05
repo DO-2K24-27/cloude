@@ -14,8 +14,7 @@ HTTP service that receives user code execution requests and coordinates with the
 # 1) Ensure agent is running first
 # See agent/README.md for agent setup
 
-# 2) Run backend
-cd /home/margo/Documents/Git/cloude
+# 2) Run backend (from repository root)
 cargo run -p backend
 ```
 
