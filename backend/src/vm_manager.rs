@@ -139,8 +139,19 @@ impl VmManager {
             let status = response.status();
             let error_text = response.text().await
                 .unwrap_or_else(|_| "Unknown error".to_string());
-            error!("Agent returned error {}: {}", status, error_text);
-            return Err(anyhow::anyhow!("Agent execution failed: {} - {}", status, error_text));
+            
+            // Truncate error response to prevent leaking large or sensitive payloads
+            const MAX_ERROR_LEN: usize = 500;
+            let sanitized_error = if error_text.len() > MAX_ERROR_LEN {
+                format!("{}... (truncated {} bytes)", 
+                    truncate_to_valid_utf8(&error_text, MAX_ERROR_LEN),
+                    error_text.len())
+            } else {
+                error_text
+            };
+            
+            error!("Agent returned error {}: {}", status, sanitized_error);
+            return Err(anyhow::anyhow!("Agent execution failed: {} - {}", status, sanitized_error));
         }
         
         let agent_response: AgentExecuteResponse = response.json()

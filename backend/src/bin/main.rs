@@ -154,7 +154,10 @@ async fn execute(
     match state.vm_manager.release_ip(&vm_id) {
         Ok(true) => tracing::info!("Released IP {} for VM {} after successful execution", vm_ip, vm_id),
         Ok(false) => tracing::warn!("No IP to release for VM {} after execution (not allocated)", vm_id),
-        Err(release_err) => tracing::error!("Failed to release IP {} for VM {} after successful execution: {}", vm_ip, vm_id, release_err),
+        Err(release_err) => {
+            tracing::error!("Failed to release IP {} for VM {} after successful execution: {}", vm_ip, vm_id, release_err);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
     }
 
     Ok(Json(ExecuteResponse {

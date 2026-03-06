@@ -69,24 +69,50 @@ impl IpManager {
         Ok(state)
     }
 
-    /// Serializes the given `IpManagerState` and writes it to the JSON file.
-    /// This method explicitly flushes buffers to disk (`sync_all`) to guarantee persistence.
+    /// Serializes the given `IpManagerState` and writes it atomically to the JSON file.
+    /// Uses a temporary file + fsync + atomic rename to prevent corruption on crash.
     /// 
     /// # Arguments
     /// * `state` - The current allocation state to save over the previous one.
     fn write_state(&self, state: &IpManagerState) -> Result<()> {
         let json = serde_json::to_string_pretty(state)
             .context("Failed to serialize state")?;
+        
+        // Create temp file in the same directory as the target file
+        let temp_path = self.file_path.with_extension("tmp");
+        
+        // Write to temp file
         let mut file = OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
-            .open(&self.file_path)
-            .context("Failed to open state file for writing")?;
+            .open(&temp_path)
+            .context("Failed to create temporary state file")?;
+        
         file.write_all(json.as_bytes())
-            .context("Failed to write state to file")?;
+            .context("Failed to write state to temporary file")?;
+        
+        // Fsync temp file to ensure data is on disk
         file.sync_all()
-            .context("Failed to sync file")?;
+            .context("Failed to sync temporary file")?;
+        
+        // Drop file handle before rename
+        drop(file);
+        
+        // Atomically replace the old file with the new one
+        std::fs::rename(&temp_path, &self.file_path)
+            .context("Failed to rename temporary file to state file")?;
+        
+        // Fsync parent directory to ensure the rename is durable
+        if let Some(parent) = self.file_path.parent() {
+            let parent_dir = OpenOptions::new()
+                .read(true)
+                .open(parent)
+                .context("Failed to open parent directory for sync")?;
+            parent_dir.sync_all()
+                .context("Failed to sync parent directory")?;
+        }
+        
         Ok(())
     }
 
