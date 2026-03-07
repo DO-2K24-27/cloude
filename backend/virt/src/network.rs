@@ -8,7 +8,7 @@ use nftables::{
 };
 use rtnetlink::{Handle, LinkBridge, LinkUnspec, new_connection, packet_route::link::LinkMessage};
 use std::net::Ipv4Addr;
-use tracing::info;
+use tracing::{debug};
 
 /// Set up the bridge interface
 pub async fn setup_bridge(
@@ -21,17 +21,17 @@ pub async fn setup_bridge(
     tokio::spawn(connection);
 
     // Check if bridge already exists
-    info!("Checking for existing bridge: {}", bridge_name);
+    debug!("Checking for existing bridge: {}", bridge_name);
     let link_index = match get_link_by_name(&handle, &bridge_name).await? {
         Some(link) => {
-            info!(
+            debug!(
                 "Bridge {} already exists with index {}",
                 bridge_name, link.header.index
             );
             link.header.index
         }
         None => {
-            info!("Creating new bridge: {}", bridge_name);
+            debug!("Creating new bridge: {}", bridge_name);
             create_bridge(&handle, &bridge_name).await?
         }
     };
@@ -40,29 +40,29 @@ pub async fn setup_bridge(
     let bridge_ip: Ipv4Addr = ip_host.into();
 
     // Configure the bridge
-    info!("Adding IP address {} to bridge", bridge_ip);
+    debug!("Adding IP address {} to bridge", bridge_ip);
     match handle
         .address()
         .add(link_index, bridge_ip.into(), ip_mask)
         .execute()
         .await
     {
-        Ok(_) => info!("IP address added successfully"),
+        Ok(_) => debug!("IP address added successfully"),
         // Could have checked NetlinkError but it's way too complicated
         Err(e) if e.to_string().contains("File exists") => {
-            info!("IP address already exists on bridge");
+            debug!("IP address already exists on bridge");
         }
         Err(e) => return Err(e.into()),
     }
 
-    info!("enabling bridge interface");
+    debug!("enabling bridge interface");
     handle
         .link()
         .set(LinkUnspec::new_with_index(link_index).up().build())
         .execute()
         .await?;
 
-    info!("Bridge {} setup complete", bridge_name);
+    debug!("Bridge {} setup complete", bridge_name);
     Ok(())
 }
 
@@ -103,7 +103,7 @@ async fn create_bridge(handle: &Handle, name: &str) -> Result<u32, rtnetlink::Er
         .await?
         .ok_or_else(|| rtnetlink::Error::RequestFailed)?;
 
-    info!("Created bridge {} with index {}", name, link.header.index);
+    debug!("Created bridge {} with index {}", name, link.header.index);
     Ok(link.header.index)
 }
 
@@ -155,11 +155,11 @@ fn check_nat_rules_exist(
 pub fn setup_nat(ip_range: Ipv4Addr, ip_mask: u8) -> Result<(), Box<dyn std::error::Error>> {
     // Check if NAT rules already exist
     if check_nat_rules_exist(ip_range, ip_mask)? {
-        info!("NAT rules already exist, skipping setup");
+        debug!("NAT rules already exist, skipping setup");
         return Ok(());
     }
 
-    info!("Setting up NAT rules");
+    debug!("Setting up NAT rules");
     let mut batch = Batch::new();
 
     // Create nat table
@@ -208,7 +208,7 @@ pub fn setup_nat(ip_range: Ipv4Addr, ip_mask: u8) -> Result<(), Box<dyn std::err
     }));
 
     helper::apply_ruleset(&batch.to_nftables())?;
-    info!("NAT rules setup complete");
+    debug!("NAT rules setup complete");
     Ok(())
 }
 
@@ -235,7 +235,7 @@ pub async fn setup_guest_iface(
         .index;
 
     // Set iface created by VMM to be slave of bridge
-    info!(
+    debug!(
         "Setting guest interface {} as slave of bridge {}",
         guest_iface_name, bridge_name
     );
@@ -250,12 +250,12 @@ pub async fn setup_guest_iface(
         .await?;
 
         // Enable the guest iface
-    info!("Enabling guest interface: {}", guest_iface_name);
+    debug!("Enabling guest interface: {}", guest_iface_name);
     handle
         .link()
         .set(LinkUnspec::new_with_name(guest_iface_name).up().build())
         .execute()
         .await?;
-    info!("Guest interface {} setup complete", guest_iface_name);
+    debug!("Guest interface {} setup complete", guest_iface_name);
     Ok(())
 }
