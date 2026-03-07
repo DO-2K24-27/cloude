@@ -367,13 +367,16 @@ impl VMM {
         num_vcpus: u8,
         kernel_path: &str,
         initramfs_path: &str,
+        init_path: Option<&str>,
     ) -> Result<()> {
-        let kernel_load = kernel::kernel_setup(
+        let kernel_load = kernel::configure_kernel(
             &self.guest_memory,
             PathBuf::from(kernel_path),
             Some(PathBuf::from(initramfs_path)),
+            init_path,
             self.cmdline_components.clone(),
         )?;
+
         self.configure_vcpus(num_vcpus, kernel_load)?;
 
         Ok(())

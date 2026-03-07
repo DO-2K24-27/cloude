@@ -79,8 +79,9 @@ fn main() {
         }
     }
 
+    let init_path = env::var("INIT_PATH").ok();
     // Configure VMM
-    if let Err(e) = vmm.configure(vcpus, &kernel_path, &initramfs_path) {
+    if let Err(e) = vmm.configure(vcpus, &kernel_path, &initramfs_path, init_path.as_deref()) {
         return eprintln!("Error configuring VMM: {:?}", e);
     }
 
