@@ -1,36 +1,50 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
+use reqwest;
+use tokio;
 
-/// VM Configuration CLI
-#[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-struct Args {
-    /// Number of CPUs to allocate to the VM
-    #[arg(short = 'c', long)]
-    cpu: u8,
 
-    /// Amount of RAM in GB to allocate to the VM
-    #[arg(short = 'r', long)]
-    ram: u32,
-
-    /// Path to the kernel image file
-    #[arg(short = 'k', long)]
-    kernel: String,
-
-    /// Path to the initramfs image file
-    #[arg(short = 'i', long)]
-    initramfs: String,
-
-    /// Path to the disk image file
-    #[arg(short = 'f', long)]
-    file: String,
+#[derive(Parser)]
+#[command(author, version, about, long_about = None)]
+#[command(propagate_version = true)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
 }
 
-fn main() {
-    let args = Args::parse();
+#[derive(Subcommand)]
+enum Commands {
+    /// Get health status from backend
+    Health,
+}
 
-    println!("CPU: {}", args.cpu);
-    println!("RAM: {} GB", args.ram);
-    println!("Kernel: {}", args.kernel);
-    println!("Initramfs: {}", args.initramfs);
-    println!("File: {}", args.file);
+#[tokio::main]
+async fn main() {
+    let cli = Cli::parse();
+    let backend_url = std::env::var("BACKEND_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
+
+    match &cli.command {
+        Some(Commands::Health) => {
+            get_backend_health(&backend_url).await;
+        }
+        None => {
+            println!("No command provided. Use --help for more information.");
+        }
+    }
+}
+
+async fn get_backend_health(backend_url: &str) {
+    let health_url = format!("{}/health", backend_url);
+    match reqwest::get(&health_url).await {
+        Ok(response) => {
+            if response.status().is_success() {
+                match response.text().await {
+                    Ok(text) => println!("Backend Health: {}", text),
+                    Err(e) => eprintln!("Failed to read response: {}", e),
+                }
+            } else {
+                eprintln!("Backend returned an error status: {}", response.status());
+            }
+        }
+        Err(e) => eprintln!("Failed to connect to backend: {}", e),
+    }
 }
