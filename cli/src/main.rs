@@ -1,7 +1,4 @@
 use clap::{Parser, Subcommand};
-use reqwest;
-use tokio;
-
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -20,7 +17,8 @@ enum Commands {
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
-    let backend_url = std::env::var("BACKEND_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
+    let backend_url =
+        std::env::var("BACKEND_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
 
     match &cli.command {
         Some(Commands::Health) => {
