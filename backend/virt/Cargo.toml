@@ -1,0 +1,20 @@
+[package]
+name = "virt"
+version = "0.1.0"
+edition = "2024"
+
+
+[[bin]]
+name = "run-vm"
+path = "src/bin/run_vm.rs"
+
+[dependencies]
+futures-util = "0.3.32"
+log = "0.4.29"
+nftables = "0.6.3"
+rtnetlink = "0.20.0"
+tokio = { version = "1.50.0", features = ["macros", "rt-multi-thread"] }
+tracing = "0.1.44"
+tracing-subscriber = "0.3.22"
+vmm = { path = "../../vmm" }
+vmm-sys-util = "0.15.0"

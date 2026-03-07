@@ -55,7 +55,7 @@ pub const TUN_F_UFO: ::std::os::raw::c_uint = 16;
 
 pub struct VirtioNetDevice {
     vm_fd: Arc<VmFd>,
-    tap_name: String,
+    tap: Option<Tap>,
     /// addresses where the device lives in the guest
     pub mmio_range: RangeInclusive,
     // IRQ (id on the guest side), for signaling the driver (guest)
@@ -80,6 +80,8 @@ impl VirtioNetDevice {
         mmio_range: RangeInclusive,
         endpoint: RemoteEndpoint<Subscriber>,
     ) -> Result<Self, Error> {
+        let tap = Self::setup_tap(&tap_name)?;
+
         let queues = vec![
             Queue::new(guest_memory.clone(), VIRTIO_NET_QUEUE_SIZE),
             Queue::new(guest_memory.clone(), VIRTIO_NET_QUEUE_SIZE),
@@ -96,7 +98,7 @@ impl VirtioNetDevice {
             vm_fd,
             irq,
             irqfd,
-            tap_name,
+            tap: Some(tap),
             mmio_range,
             virtio_cfg,
             handler: None,
@@ -152,8 +154,8 @@ impl BorrowMut<MyVirtioConfig> for VirtioNetDevice {
 }
 
 impl VirtioNetDevice {
-    fn setup_tap(&mut self) -> Result<Tap, Error> {
-        let tap = Tap::open_named(self.tap_name.as_str()).map_err(Error::Tap)?;
+    fn setup_tap(tap_name: &str) -> Result<Tap, Error> {
+        let tap = Tap::open_named(tap_name).map_err(Error::Tap)?;
 
         // Set offload flags to match the relevant virtio features of the device (for now,
         // statically set in the constructor.
@@ -232,7 +234,10 @@ impl VirtioDeviceActions for VirtioNetDevice {
     type E = Error;
 
     fn activate(&mut self) -> Result<(), Error> {
-        let tap = self.setup_tap()?;
+        let tap: Tap = self
+            .tap
+            .take()
+            .expect("Tap should be set up in the constructor");
 
         let queue_eventfds = self.register_queue_events()?;
         let handler = self.setup_handler(

@@ -1,22 +1,21 @@
-use rtnetlink::{Handle, LinkBridge, LinkUnspec, new_connection, packet_route::link::LinkMessage};
 use futures_util::stream::TryStreamExt;
 use nftables::{
-    helper,
-    schema,
     batch::Batch,
-    stmt::{Statement, Match, Operator},
     expr::{Expression, NamedExpression, Payload, PayloadField, Prefix},
+    helper, schema,
+    stmt::{Match, Operator, Statement},
     types,
 };
-use std::env;
+use rtnetlink::{Handle, LinkBridge, LinkUnspec, new_connection, packet_route::link::LinkMessage};
 use std::net::Ipv4Addr;
 use tracing::info;
 
 /// Set up the bridge interface
-pub async fn setup_bridge() -> Result<(), Box<dyn std::error::Error>> {
-    let bridge_name = env::var("BRIDGE_NAME").unwrap_or_else(|_| "cloudebr0".to_string());
-    let bridge_ip: Ipv4Addr = env::var("BRIDGE_IP").unwrap_or_else(|_| "192.168.39.39".to_string()).parse()?;
-
+pub async fn setup_bridge(
+    bridge_name: String,
+    ip_host: Ipv4Addr,
+    ip_mask: u8,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Create rtnetlink connection
     let (connection, handle, _) = new_connection()?;
     tokio::spawn(connection);
@@ -25,7 +24,10 @@ pub async fn setup_bridge() -> Result<(), Box<dyn std::error::Error>> {
     info!("Checking for existing bridge: {}", bridge_name);
     let link_index = match get_link_by_name(&handle, &bridge_name).await? {
         Some(link) => {
-            info!("Bridge {} already exists with index {}", bridge_name, link.header.index);
+            info!(
+                "Bridge {} already exists with index {}",
+                bridge_name, link.header.index
+            );
             link.header.index
         }
         None => {
@@ -33,12 +35,15 @@ pub async fn setup_bridge() -> Result<(), Box<dyn std::error::Error>> {
             create_bridge(&handle, &bridge_name).await?
         }
     };
+    
+    // gods please pardon me
+    let bridge_ip: Ipv4Addr = ip_host.into();
 
     // Configure the bridge
     info!("Adding IP address {} to bridge", bridge_ip);
     match handle
         .address()
-        .add(link_index, bridge_ip.into(), 24)
+        .add(link_index, bridge_ip.into(), ip_mask)
         .execute()
         .await
     {
@@ -80,7 +85,7 @@ async fn get_link_by_name(
             }
         }
     }
-    
+
     Ok(None)
 }
 
@@ -104,49 +109,52 @@ async fn create_bridge(handle: &Handle, name: &str) -> Result<u32, rtnetlink::Er
 
 /// Check if NAT table and rules already exist
 /// i hate you nftablesd
-fn check_nat_rules_exist() -> Result<bool, Box<dyn std::error::Error>> {
+fn check_nat_rules_exist(
+    ip_range: Ipv4Addr,
+    ip_mask: u8,
+) -> Result<bool, Box<dyn std::error::Error>> {
     // Get current ruleset
     let nftables = helper::get_current_ruleset()?;
 
-    let has_correct_rule = nftables.objects.iter().any(|object| {
-        match object {
-            schema::NfObject::ListObject(schema::NfListObject::Rule(rule))
-                if rule.family == types::NfFamily::IP
-                    && rule.table == "nat"
-                    && rule.chain == "POSTROUTING" =>
-            {
-                let mut has_ip_match = false;
-                let mut has_masquerade = false;
+    let has_correct_rule = nftables.objects.iter().any(|object| match object {
+        schema::NfObject::ListObject(schema::NfListObject::Rule(rule))
+            if rule.family == types::NfFamily::IP
+                && rule.table == "nat"
+                && rule.chain == "POSTROUTING" =>
+        {
+            let mut has_ip_match = false;
+            let mut has_masquerade = false;
 
-                for stmt in rule.expr.iter() {
-                    match stmt {
-                        Statement::Match(m) => {
-                            if let Expression::Named(NamedExpression::Prefix(prefix)) = &m.right {
-                                if let Expression::String(addr) = &*prefix.addr {
-                                    if addr.as_ref() == "192.168.39.0" && prefix.len == 24 {
-                                        has_ip_match = true;
-                                    }
+            for stmt in rule.expr.iter() {
+                match stmt {
+                    Statement::Match(m) => {
+                        if let Expression::Named(NamedExpression::Prefix(prefix)) = &m.right {
+                            if let Expression::String(addr) = &*prefix.addr {
+                                if addr.as_ref() == ip_range.to_string()
+                                    && prefix.len == u32::from(ip_mask)
+                                {
+                                    has_ip_match = true;
                                 }
                             }
                         }
-                        Statement::Masquerade(_) => has_masquerade = true,
-                        _ => {}
                     }
+                    Statement::Masquerade(_) => has_masquerade = true,
+                    _ => {}
                 }
-
-                has_ip_match && has_masquerade
             }
-            _ => false,
+
+            has_ip_match && has_masquerade
         }
+        _ => false,
     });
 
     Ok(has_correct_rule)
 }
 
 /// Set up NAT rules using nftables
-pub fn setup_nat() -> Result<(), Box<dyn std::error::Error>> {
+pub fn setup_nat(ip_range: Ipv4Addr, ip_mask: u8) -> Result<(), Box<dyn std::error::Error>> {
     // Check if NAT rules already exist
-    if check_nat_rules_exist()? {
+    if check_nat_rules_exist(ip_range, ip_mask)? {
         info!("NAT rules already exist, skipping setup");
         return Ok(());
     }
@@ -180,12 +188,12 @@ pub fn setup_nat() -> Result<(), Box<dyn std::error::Error>> {
         chain: "POSTROUTING".into(),
         expr: vec![
             Statement::Match(Match {
-                left: Expression::Named(NamedExpression::Payload(
-                    Payload::PayloadField(PayloadField {
+                left: Expression::Named(NamedExpression::Payload(Payload::PayloadField(
+                    PayloadField {
                         protocol: "ip".into(),
                         field: "saddr".into(),
-                    })
-                )),
+                    },
+                ))),
                 right: Expression::Named(NamedExpression::Prefix(Prefix {
                     addr: Box::new(Expression::String("192.168.39.0".into())),
                     len: 24,
@@ -194,11 +202,60 @@ pub fn setup_nat() -> Result<(), Box<dyn std::error::Error>> {
             }),
             // Action: masquerade
             Statement::Masquerade(None),
-        ].into(),
+        ]
+        .into(),
         ..Default::default()
     }));
 
     helper::apply_ruleset(&batch.to_nftables())?;
     info!("NAT rules setup complete");
+    Ok(())
+}
+
+/// setup guest iface to be slave of given bridge
+pub async fn setup_guest_iface(
+    guest_iface_name: &str,
+    bridge_name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Create rtnetlink connection
+    let (connection, handle, _) = new_connection()?;
+    tokio::spawn(connection);
+
+    // Get bridge index
+    let bridge_index = get_link_by_name(&handle, &bridge_name)
+        .await?
+        .ok_or_else(|| format!("Bridge {} not found", bridge_name))?
+        .header
+        .index;
+
+    let guest_iface_index = get_link_by_name(&handle, guest_iface_name)
+        .await?
+        .ok_or_else(|| format!("Guest interface {} not found", guest_iface_name))?
+        .header
+        .index;
+
+    // Set iface created by VMM to be slave of bridge
+    info!(
+        "Setting guest interface {} as slave of bridge {}",
+        guest_iface_name, bridge_name
+    );
+    handle
+        .link()
+        .set(
+            LinkUnspec::new_with_index(guest_iface_index)
+                .controller(bridge_index)
+                .build(),
+        )
+        .execute()
+        .await?;
+
+        // Enable the guest iface
+    info!("Enabling guest interface: {}", guest_iface_name);
+    handle
+        .link()
+        .set(LinkUnspec::new_with_name(guest_iface_name).up().build())
+        .execute()
+        .await?;
+    info!("Guest interface {} setup complete", guest_iface_name);
     Ok(())
 }

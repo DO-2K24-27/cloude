@@ -1,16 +1,26 @@
 use axum::{Router, routing::get};
-use backend::virt::network::{setup_bridge, setup_nat};
+use virt::network::{setup_bridge, setup_nat};
 use std::env;
 use tokio::net::TcpListener;
 use tracing::{Level, info};
 use tracing_subscriber;
+use std::net::Ipv4Addr;
 
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
     // Get the server address from the environment variable or use a default
     let server_addr =
         env::var("BACKEND_SERVER_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
-
+    let bridge_name = env::var("BRIDGE_NAME").unwrap_or_else(|_| "cloudebr0".to_string());
+    // 39 is miku
+    let ip_range: Ipv4Addr = env::var("IP_RANGE").as_deref()
+        .unwrap_or_else(|_| "10.39.1.0")
+        .parse()
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("IP_RANGE env variable is unvalid: {}", e)))?;
+    let ip_mask: u8 = env::var("IP_MASK")
+        .unwrap_or_else(|_| "24".to_string())
+        .parse()
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("IP_MASK env variable is unvalid: {}", e)))?;
     // Initialize tracing subscriber for logging
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
@@ -18,17 +28,19 @@ async fn main() -> Result<(), std::io::Error> {
     // I think using TWO WHOLE crates only to create the interface and tell it to do postrouting/ip forwarding may be a lot.
     // An alternative would be to use ioctl (?) or just run a command.
     // Please give me feedback, this is making me go crazy.
-    
+
     // Set up the bridge and NAT rules
-    if let Err(e) = setup_bridge().await {
+    let host_ip: Ipv4Addr = (ip_range.to_bits() + 1).into();
+    if let Err(e) = setup_bridge(bridge_name, host_ip, ip_mask).await {
         eprintln!("Failed to set up bridge: {}", e);
         return Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()));
     }
-    if let Err(e) = setup_nat() {
+
+    if let Err(e) = setup_nat(ip_range,ip_mask) {
         eprintln!("Failed to set up NAT: {}", e);
         return Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()));
     }
-    
+
     // Create a simple router with a health check endpoint
     let app = Router::new()
         .route("/", get(root))
