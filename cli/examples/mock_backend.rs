@@ -35,7 +35,7 @@ use tokio::time::Instant;
 struct Job {
     id: String,
     language: String,
-    code_preview: String,   // first 80 chars of submitted code
+    code_preview: String, // first 80 chars of submitted code
     created_at: Instant,
     /// Simulated delay before the job finishes (seconds)
     finish_after_secs: u64,
@@ -109,10 +109,7 @@ async fn health() -> &'static str {
     "ok"
 }
 
-async fn run_job(
-    State(store): State<Store>,
-    Json(payload): Json<RunRequest>,
-) -> impl IntoResponse {
+async fn run_job(State(store): State<Store>, Json(payload): Json<RunRequest>) -> impl IntoResponse {
     // Generate a short readable ID
     let id = format!(
         "mock-{:x}",
@@ -144,10 +141,7 @@ async fn run_job(
     (StatusCode::ACCEPTED, Json(RunResponse { id }))
 }
 
-async fn get_status(
-    State(store): State<Store>,
-    Path(id): Path<String>,
-) -> impl IntoResponse {
+async fn get_status(State(store): State<Store>, Path(id): Path<String>) -> impl IntoResponse {
     println!("[mock] GET /status/{id}");
 
     // Static pre-built scenarios

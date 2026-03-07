@@ -101,7 +101,10 @@ async fn cmd_go(
         .map_err(|e| format!("Cannot read file {}: {e}", file.display()))?;
 
     let url = format!("{backend}/run");
-    let body = RunRequest { language: language.to_string(), code };
+    let body = RunRequest {
+        language: language.to_string(),
+        code,
+    };
 
     let resp = client.post(&url).json(&body).send().await?;
 
