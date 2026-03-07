@@ -84,8 +84,7 @@ async fn main() -> Result<(), std::io::Error> {
     // Get the server address from the environment variable or use a default
     let server_addr =
         env::var("BACKEND_SERVER_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
-    let agent_url =
-        env::var("AGENT_URL").unwrap_or_else(|_| "http://127.0.0.1:3001".to_string());
+    let agent_url = env::var("AGENT_URL").unwrap_or_else(|_| "http://127.0.0.1:3001".to_string());
 
     // Initialize tracing subscriber for logging
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
@@ -166,7 +165,8 @@ async fn run_job(
             }
         }
 
-        let result = state.client
+        let result = state
+            .client
             .post(format!("{}/execute", state.agent_url))
             .json(&AgentExecuteRequest { language, code })
             .send()
@@ -213,10 +213,7 @@ async fn run_job(
         }
     });
 
-    (
-        StatusCode::ACCEPTED,
-        Json(RunResponse { id }),
-    )
+    (StatusCode::ACCEPTED, Json(RunResponse { id }))
 }
 
 // ── GET /status/:id  –  query job result ────────────────────────────

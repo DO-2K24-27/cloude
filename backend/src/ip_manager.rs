@@ -57,12 +57,16 @@ impl From<serde_json::Error> for IpManagerError {
 
 impl IpManager {
     /// Creates a new `IpManager` or loads an existing state from the given file path.
-    /// 
+    ///
     /// # Arguments
     /// * `file_path` - Path to the JSON file used for persistence.
     /// * `start_ip` - The first IP address available in the allocation pool.
     /// * `end_ip` - The last IP address available in the allocation pool.
-    pub fn new<P: AsRef<Path>>(file_path: P, start_ip: Ipv4Addr, end_ip: Ipv4Addr) -> Result<Self, IpManagerError> {
+    pub fn new<P: AsRef<Path>>(
+        file_path: P,
+        start_ip: Ipv4Addr,
+        end_ip: Ipv4Addr,
+    ) -> Result<Self, IpManagerError> {
         let manager = Self {
             file_path: file_path.as_ref().to_path_buf(),
             start_ip: u32::from(start_ip),
@@ -90,7 +94,7 @@ impl IpManager {
 
         let mut contents = String::new();
         file.read_to_string(&mut contents)?;
-        
+
         if contents.trim().is_empty() {
             return Ok(IpManagerState::default());
         }
@@ -101,7 +105,7 @@ impl IpManager {
 
     /// Serializes the given `IpManagerState` and writes it to the JSON file.
     /// This method explicitly flushes buffers to disk (`sync_all`) to guarantee persistence.
-    /// 
+    ///
     /// # Arguments
     /// * `state` - The current allocation state to save over the previous one.
     fn write_state(&self, state: &IpManagerState) -> Result<(), IpManagerError> {
@@ -118,7 +122,7 @@ impl IpManager {
 
     /// Allocates an available IP address for the specified VM.
     /// If the VM already has an allocated IP, the existing IP is returned idempotently.
-    /// 
+    ///
     /// # Arguments
     /// * `vm_id` - A unique identifier for the Virtual Machine.
     pub fn allocate_ip(&self, vm_id: &str) -> Result<String, IpManagerError> {
@@ -145,17 +149,17 @@ impl IpManager {
 
         let ip = selected_ip.ok_or(IpManagerError::PoolExhausted)?;
         state.allocations.insert(vm_id.to_string(), ip.clone());
-        
+
         self.write_state(&state)?;
 
         Ok(ip)
     }
 
     /// Releases the IP address associated with the given VM, making it available again.
-    /// 
+    ///
     /// # Arguments
     /// * `vm_id` - The unique identifier of the Virtual Machine.
-    /// 
+    ///
     /// Returns `true` if an IP was successfully released, `false` if the VM had no IP allocated.
     pub fn release_ip(&self, vm_id: &str) -> Result<bool, IpManagerError> {
         let _guard = self.lock.lock().unwrap();
