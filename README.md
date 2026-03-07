@@ -82,7 +82,7 @@ Custom virtual machine monitor implementing KVM-based virtualization with virtio
 
 ### cli
 
-Command-line tool for configuring and managing virtual machines.
+Command-line tool for executing code in vms.
 
 - **Documentation**: [cli/readme.md](cli/readme.md)
 
