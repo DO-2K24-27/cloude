@@ -7,22 +7,17 @@
 // NETMASK=<mask> - optional, network mask
 
 use std::env;
+use tracing::Level;
 use vmm::{VMInput, VMM};
 use vmm_sys_util::terminal::Terminal;
 
 fn setup_logging() {
-    let mut builder =
-        &mut env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
-    if std::env::var("RUST_LOG").is_err() && std::env::var("VERBOSE").is_err() {
-        // Simplify log format
-        builder = builder.format_timestamp(None).format_target(false);
-    }
-    builder.init();
-
+    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
     log::debug!("Debug logging enabled");
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     setup_logging();
 
     let kernel_path = match env::var("KERNEL_PATH") {
@@ -70,12 +65,23 @@ fn main() {
         let netmask = env::var("NETMASK").ok();
 
         if let Err(e) = vmm.add_net_device(
-            tap_name,
+            tap_name.clone(),
             guest_ip.as_deref(),
             host_ip.as_deref(),
             netmask.as_deref(),
         ) {
             return eprintln!("Error adding net device: {:?}", e);
+        }
+
+        // If an host IP is set, setup the bridge for it
+        if let Some(host_ip) = host_ip.as_deref() {
+            virt::network::setup_bridge("cloudebrtest".to_string(), host_ip.parse().unwrap(), 24)
+                .await
+                .expect("Failed to set up bridge");
+
+            virt::network::setup_guest_iface(&tap_name, "cloudebrtest")
+                .await
+                .expect("Failed to set up guest network interface");
         }
     }
 
