@@ -113,10 +113,11 @@ pub fn build_bootparams(
 /// * `guest_memory` - Guest memory
 /// * `kernel_path` - Path to the kernel image
 /// * `initramfs_path` - Optional path to the initramfs image
-pub fn kernel_setup(
+pub fn configure_kernel(
     guest_memory: &GuestMemoryMmap,
     kernel_path: PathBuf,
     initramfs_path: Option<PathBuf>,
+    init_path: Option<&str>,
     cmdline_components: Vec<String>,
 ) -> Result<KernelLoaderResult> {
     let mut kernel_image = File::open(kernel_path).map_err(Error::IO)?;
@@ -152,7 +153,7 @@ pub fn kernel_setup(
 
         // Add rdinit to command line
         cmdline
-            .insert_str(" rdinit=/bin/sh")
+            .insert_str(format!(" rdinit={}", init_path.unwrap_or("/init")))
             .map_err(Error::Cmdline)?;
 
         println!(
