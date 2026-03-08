@@ -1,3 +1,7 @@
+pub mod c;
+pub mod cpp;
+pub mod go;
+pub mod java;
 pub mod node;
 pub mod python;
 pub mod rust;
@@ -25,6 +29,10 @@ pub fn runtime_from_language(language: &str) -> Option<RuntimeBox> {
         "python" | "py" => Some(Box::new(python::PythonRuntime)),
         "node" | "javascript" | "js" => Some(Box::new(node::NodeRuntime)),
         "rust" | "rs" => Some(Box::new(rust::RustRuntime)),
+        "go" | "golang" => Some(Box::new(go::GoRuntime)),
+        "java" => Some(Box::new(java::JavaRuntime)),
+        "c" => Some(Box::new(c::CRuntime)),
+        "cpp" | "c++" => Some(Box::new(cpp::CppRuntime)),
         _ => None,
     }
 }
