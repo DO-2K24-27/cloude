@@ -105,6 +105,8 @@ It will create a VM and send the order of execution before returning the output.
 ### Agent
 
 The agent is in charge of receiving code to execute, start it and wait for the complete execution.
+Each VM has an agent that starts a webserver to receive the requests on a specific port.
+When the backend starts a VM the agent starts in it and wait for the orders, the backend send the order through the IP of the VM and the agent receives it.
 
 **Features :**
 - The code to execute is received from the backend
