@@ -28,7 +28,7 @@ async fn main() -> Result<(), std::io::Error> {
         .map_err(|e| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                format!("IP_RANGE env variable is unvalid: {}", e),
+                format!("IP_RANGE env variable is invalid: {}", e),
             )
         })?;
     let ip_mask: u8 = env::var("IP_MASK")
@@ -37,7 +37,7 @@ async fn main() -> Result<(), std::io::Error> {
         .map_err(|e| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                format!("IP_MASK env variable is unvalid: {}", e),
+                format!("IP_MASK env variable is invalid: {}", e),
             )
         })?;
 
