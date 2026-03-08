@@ -7,18 +7,19 @@
 // NETMASK=<mask> - optional, network mask
 
 use std::env;
-use tracing::Level;
+use tracing_subscriber::EnvFilter;
 use vmm::{VMInput, VMM};
 use vmm_sys_util::terminal::Terminal;
 
-fn setup_logging() {
-    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
-    log::debug!("Debug logging enabled");
-}
-
 #[tokio::main]
 async fn main() {
-    setup_logging();
+    // init logging
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
+    log::debug!("Debug logging enabled");
 
     let kernel_path = match env::var("KERNEL_PATH") {
         Ok(val) => val,

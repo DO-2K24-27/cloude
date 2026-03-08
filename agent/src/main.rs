@@ -6,14 +6,15 @@ use axum::{
     Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::get,
     routing::post,
 };
+use tracing::info;
 use serde::{Deserialize, Serialize};
+use tracing_subscriber::EnvFilter;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::net::TcpListener;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use tracing::{Level, info};
 
 struct AppState {
     job_counter: AtomicU64,
@@ -43,7 +44,13 @@ struct ErrorResponse {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
+    // init logging
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
+    log::debug!("Debug logging enabled");
 
     let server_addr =
         env::var("AGENT_SERVER_ADDR").unwrap_or_else(|_| "127.0.0.1:3001".to_string());
