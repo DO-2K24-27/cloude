@@ -6,7 +6,6 @@ Serverless Rust program to run code from clients in micro-vm
 
 - [Cloude](#Cloude)
   - [Table of contents](#table-of-contents)
-  - [Dependencies](#dependencies)
   - [Architecture](#architecture)
     - [Initramfs Builder](#initrams-builder)
     - [VMM](#vmm)
@@ -15,39 +14,6 @@ Serverless Rust program to run code from clients in micro-vm
     - [CLI](#cli)
   - [Components lifetime](#components-lifetime)
   - [License](#license)
-
-## Dependencies
-
-Cloude is written in Rust and makes use of the following libraries :
-- anyhow
-- axum
-- clap
-- epoll
-- event-manager
-- futures-util
-- initramfs-builder
-- kvm-bindings
-- kvm-ioctls
-- libc
-- linux-loader
-- log
-- nftables
-- regex
-- rtnetlink
-- serde
-- serde_json
-- tokio
-- tracing
-- tracing-subscriber
-- uuid
-- virt
-- vm-memory
-- vmm-sys-util
-- vm-device
-- vm-superio
-- vm-allocator
-- virtio-queue
-- virtio-device
 
 ## Architecture
 
@@ -98,7 +64,7 @@ In a more graphical way this is the architecture of the project :
     |  | Dependencies        | |
     |  +---------------------+ |
     +--------------------------+
-                |
+                ↑
                 |
     +----------+-----------+
     |   Initramfs Builder  |
