@@ -172,8 +172,8 @@ pub fn setup_nat(ip_range: Ipv4Addr, ip_mask: u8) -> Result<(), Box<dyn std::err
     // Create postrouting chain in nat table
     batch.add(schema::NfListObject::Chain(schema::Chain {
         family: types::NfFamily::IP,
-        table: "nat".into(),
-        name: "POSTROUTING".into(),
+        table: "cloude_nat".into(),
+        name: "cloude_postr".into(),
         _type: Some(types::NfChainType::NAT),
         hook: Some(types::NfHook::Postrouting),
         prio: Some(1),
@@ -184,8 +184,8 @@ pub fn setup_nat(ip_range: Ipv4Addr, ip_mask: u8) -> Result<(), Box<dyn std::err
     // Add masquerade rule to postrouting chain (only for bridge network traffic)
     batch.add(schema::NfListObject::Rule(schema::Rule {
         family: types::NfFamily::IP,
-        table: "nat".into(),
-        chain: "POSTROUTING".into(),
+        table: "cloude_nat".into(),
+        chain: "cloude_postr".into(),
         expr: vec![
             Statement::Match(Match {
                 left: Expression::Named(NamedExpression::Payload(Payload::PayloadField(
