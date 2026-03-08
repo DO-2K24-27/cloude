@@ -111,7 +111,7 @@ async fn create_bridge(handle: &Handle, name: &str) -> Result<u32, rtnetlink::Er
 }
 
 /// Compute network address for an IPv4 CIDR.
-fn network_addr(ip: Ipv4Addr, prefix_len: u8) -> Result<Ipv4Addr, Box<dyn std::error::Error>> {
+pub fn network_addr(ip: Ipv4Addr, prefix_len: u8) -> Result<Ipv4Addr, Box<dyn std::error::Error>> {
     if prefix_len > 32 {
         return Err(format!("invalid IPv4 prefix length: {}", prefix_len).into());
     }
