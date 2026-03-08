@@ -7,7 +7,7 @@ Serverless Rust program to run code from clients in micro-vm
 - [Cloude](#cloude)
   - [Table of contents](#table-of-contents)
   - [Architecture](#architecture)
-    - [Initramfs Builder](#initrams-builder)
+    - [Initramfs Builder](#initramfs-builder)
     - [VMM](#vmm)
     - [Backend](#backend)
     - [Agent](#agent)
