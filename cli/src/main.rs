@@ -68,6 +68,7 @@ struct ErrorBody {
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+    let backend = cli.backend.trim_end_matches('/').to_string();
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
@@ -75,13 +76,13 @@ async fn main() {
 
     match cli.command {
         Commands::Go { language, file } => {
-            if let Err(e) = cmd_go(&client, &cli.backend, &language, &file).await {
+            if let Err(e) = cmd_go(&client, &backend, &language, &file).await {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
             }
         }
         Commands::Status { id } => {
-            if let Err(e) = cmd_status(&client, &cli.backend, &id).await {
+            if let Err(e) = cmd_status(&client, &backend, &id).await {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
             }
