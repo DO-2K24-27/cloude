@@ -14,11 +14,11 @@ Serverless Rust program to run code from clients in micro-vm
     - [Agent](#agent)
     - [CLI](#cli)
   - [Components lifetime](#components-lifetime)
-  - [License](#licence)
+  - [License](#license)
 
 ## Dependencies
 
-Cloud is written in Rust and makes use of the following libraries :
+Cloude is written in Rust and makes use of the following libraries :
 - anyhow
 - axum
 - clap
@@ -113,7 +113,7 @@ The VMM is a wrapper to KVM that handles the logic to manage the VM.
 It brings methods to create VMs, handle virtio device creation, assign IP, manage serial channels.
 
 **Features :**
-- Programs can create VM with ressources allocated
+- Programs can create VM with resources allocated
 - IP can be set to handle program-VM communication
 - Serial port receives the output of the commands
 
@@ -124,7 +124,7 @@ It will create a VM and send the order of execution before returning the output.
 
 **Features :**
 - User send requests to the specified route
-- A VM is created with a specific IP, ressources and image
+- A VM is created with a specific IP, resources and image
 - The code is sent to the agent inside the VM for execution
 - After execution the output is returned
 
@@ -143,7 +143,7 @@ The CLI is a user-friendly interface to interact with the backend without CURL r
 
 **Features :**
 - Commands are executed in the user space
-- Requests goes to the designed backend
+- Requests go to the designed backend
 - Code output is received from the backend after execution
 
 ## Components lifetime
@@ -153,6 +153,6 @@ That way the agent only exists for the time of execution while the backend is co
 
 The CLI is only used when the user needs it.
 
-## Licence
+## License
 
 The project is distributed under license `Apache License 2.0`
