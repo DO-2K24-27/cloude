@@ -71,35 +71,36 @@ fn try_read_serial_config(device_path: &str) -> Result<SerialConfig> {
         let line = buffer.trim();
         debug!("Serial line received: {}", line);
 
-        // Expected format: IP:192.168.100.10:3001
-        if line.starts_with("IP:") {
+        // Expected format: IP=192.168.100.10:3001
+        if line.starts_with("IP=") {
             return parse_ip_config(line);
         }
     }
 }
 
 fn parse_ip_config(line: &str) -> Result<SerialConfig> {
-    let parts: Vec<&str> = line.split(':').collect();
-    
-    if parts.len() != 3 {
+    if !line.starts_with("IP=") {
         return Err(anyhow::anyhow!(
-            "Invalid IP configuration format. Expected 'IP:address:port', got '{}'", 
+            "Configuration line must start with 'IP=', got '{}'", 
             line
         ));
     }
 
-    if parts[0] != "IP" {
+    // Split on '=' first to get the IP:port part
+    let config_part = line.strip_prefix("IP=").unwrap();
+    let parts: Vec<&str> = config_part.split(':').collect();
+    
+    if parts.len() != 2 {
         return Err(anyhow::anyhow!(
-            "Configuration line must start with 'IP:', got '{}'", 
-            parts[0]
+            "Invalid IP configuration format. Expected 'IP=address:port', got '{}'", 
+            line
         ));
     }
 
-    let ip = parts[1].to_string();
-    let port = parts[2].parse::<u16>()
-        .with_context(|| format!("Invalid port number: {}", parts[2]))?;
+    let ip = parts[0].to_string();
+    let port = parts[1].parse::<u16>()
+        .with_context(|| format!("Invalid port number: {}", parts[1]))?;
 
-    // Validation basique de l'IP
     if ip.is_empty() {
         return Err(anyhow::anyhow!("IP address cannot be empty"));
     }
@@ -120,24 +121,24 @@ mod tests {
 
     #[test]
     fn test_parse_ip_config_valid() {
-        let config = parse_ip_config("IP:192.168.100.10:3001").unwrap();
+        let config = parse_ip_config("IP=192.168.100.10:3001").unwrap();
         assert_eq!(config.ip, "192.168.100.10");
         assert_eq!(config.port, 3001);
     }
 
     #[test]
     fn test_parse_ip_config_invalid_format() {
-        assert!(parse_ip_config("IP:192.168.100.10").is_err());
-        assert!(parse_ip_config("INVALID:192.168.100.10:3001").is_err());
-        assert!(parse_ip_config("IP::3001").is_err());
-        assert!(parse_ip_config("IP:192.168.100.10:invalid").is_err());
+        assert!(parse_ip_config("IP=192.168.100.10").is_err());
+        assert!(parse_ip_config("INVALID=192.168.100.10:3001").is_err());
+        assert!(parse_ip_config("IP=:3001").is_err());
+        assert!(parse_ip_config("IP=192.168.100.10:invalid").is_err());
     }
 
     #[tokio::test]
     async fn test_read_serial_config_from_file() {
         let mut temp_file = NamedTempFile::new().unwrap();
         writeln!(temp_file, "Some kernel log").unwrap();
-        writeln!(temp_file, "IP:192.168.100.20:3002").unwrap();
+        writeln!(temp_file, "IP=192.168.100.20:3002").unwrap();
         temp_file.flush().unwrap();
 
         let config = read_serial_config_from_file(temp_file.path().to_str().unwrap()).await.unwrap();
