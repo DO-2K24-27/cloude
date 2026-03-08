@@ -186,7 +186,7 @@ async fn run_job(
 
         let result = state
             .client
-            .post(format!("{}/execute", state.agent_url))
+            .post(format!("{}/execute", state.agent_url.trim_end_matches('/')))
             .json(&AgentExecuteRequest { language, code })
             .send()
             .await;
