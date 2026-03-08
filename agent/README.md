@@ -33,7 +33,7 @@ The agent will wait for IP configuration from the serial port before starting th
 
 ```bash
 # Create test file that the agent will check first
-echo "IP:127.0.0.1:3001" > /tmp/agent_serial_test
+echo "IP=127.0.0.1:3001" > /tmp/agent_serial_test
 
 # The agent will automatically use this file if it exists
 ```
