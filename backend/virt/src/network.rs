@@ -10,6 +10,9 @@ use rtnetlink::{Handle, LinkBridge, LinkUnspec, new_connection, packet_route::li
 use std::net::Ipv4Addr;
 use tracing::{debug};
 
+const NAT_TABLE: &str = "cloude_nat";
+const NAT_CHAIN: &str = "cloude_postr";
+
 /// Set up the bridge interface
 pub async fn setup_bridge(
     bridge_name: String,
@@ -107,20 +110,62 @@ async fn create_bridge(handle: &Handle, name: &str) -> Result<u32, rtnetlink::Er
     Ok(link.header.index)
 }
 
-/// Check if NAT table and rules already exist
-/// i hate you nftablesd
-fn check_nat_rules_exist(
-    ip_range: Ipv4Addr,
-    ip_mask: u8,
-) -> Result<bool, Box<dyn std::error::Error>> {
-    // Get current ruleset
-    let nftables = helper::get_current_ruleset()?;
+/// Compute network address for an IPv4 CIDR.
+pub fn network_addr(ip: Ipv4Addr, prefix_len: u8) -> Result<Ipv4Addr, Box<dyn std::error::Error>> {
+    if prefix_len > 32 {
+        return Err(format!("invalid IPv4 prefix length: {}", prefix_len).into());
+    }
 
-    let has_correct_rule = nftables.objects.iter().any(|object| match object {
+    let mask = if prefix_len == 0 {
+        0
+    } else {
+        u32::MAX << (32 - u32::from(prefix_len))
+    };
+
+    Ok((u32::from(ip) & mask).into())
+}
+
+/// Ensure the host allows IPv4 forwarding.
+fn ensure_ipv4_forwarding_enabled() -> Result<(), Box<dyn std::error::Error>> {
+    const IPV4_FORWARD_PATH: &str = "/proc/sys/net/ipv4/ip_forward";
+    let current = std::fs::read_to_string(IPV4_FORWARD_PATH)?;
+
+    if current.trim() == "1" {
+        return Ok(());
+    }
+
+    std::fs::write(IPV4_FORWARD_PATH, "1\n")?;
+    debug!("Enabled IPv4 forwarding on host");
+    Ok(())
+}
+
+fn nat_table_exists(ruleset: &schema::Nftables) -> bool {
+    ruleset.objects.iter().any(|object| match object {
+        schema::NfObject::ListObject(schema::NfListObject::Table(table)) => {
+            table.family == types::NfFamily::IP && table.name == NAT_TABLE
+        }
+        _ => false,
+    })
+}
+
+fn nat_chain_exists(ruleset: &schema::Nftables) -> bool {
+    ruleset.objects.iter().any(|object| match object {
+        schema::NfObject::ListObject(schema::NfListObject::Chain(chain)) => {
+            chain.family == types::NfFamily::IP
+                && chain.table == NAT_TABLE
+                && chain.name == NAT_CHAIN
+        }
+        _ => false,
+    })
+}
+
+/// Check if NAT masquerade rule already exists for the given CIDR.
+fn nat_rule_exists(ruleset: &schema::Nftables, cidr_base: Ipv4Addr, prefix_len: u8) -> bool {
+    ruleset.objects.iter().any(|object| match object {
         schema::NfObject::ListObject(schema::NfListObject::Rule(rule))
             if rule.family == types::NfFamily::IP
-                && rule.table == "nat"
-                && rule.chain == "POSTROUTING" =>
+                && rule.table == NAT_TABLE
+                && rule.chain == NAT_CHAIN =>
         {
             let mut has_ip_match = false;
             let mut has_masquerade = false;
@@ -130,8 +175,8 @@ fn check_nat_rules_exist(
                     Statement::Match(m) => {
                         if let Expression::Named(NamedExpression::Prefix(prefix)) = &m.right {
                             if let Expression::String(addr) = &*prefix.addr {
-                                if addr.as_ref() == ip_range.to_string()
-                                    && prefix.len == u32::from(ip_mask)
+                                if addr.as_ref() == cidr_base.to_string()
+                                    && prefix.len == u32::from(prefix_len)
                                 {
                                     has_ip_match = true;
                                 }
@@ -146,72 +191,76 @@ fn check_nat_rules_exist(
             has_ip_match && has_masquerade
         }
         _ => false,
-    });
-
-    Ok(has_correct_rule)
+    })
 }
 
 /// Set up NAT rules using nftables
 pub fn setup_nat(ip_range: Ipv4Addr, ip_mask: u8) -> Result<(), Box<dyn std::error::Error>> {
-    // Check if NAT rules already exist
-    if check_nat_rules_exist(ip_range, ip_mask)? {
-        debug!("NAT rules already exist, skipping setup");
+    let cidr_base = network_addr(ip_range, ip_mask)?;
+    ensure_ipv4_forwarding_enabled()?;
+
+    let ruleset = helper::get_current_ruleset()?;
+    let table_exists = nat_table_exists(&ruleset);
+    let chain_exists = nat_chain_exists(&ruleset);
+    let rule_exists = nat_rule_exists(&ruleset, cidr_base, ip_mask);
+
+    if table_exists && chain_exists && rule_exists {
+        debug!("NAT rules already exist for {}/{}", cidr_base, ip_mask);
         return Ok(());
     }
 
-    debug!("Setting up NAT rules");
+    debug!("Setting up NAT rules for {}/{}", cidr_base, ip_mask);
     let mut batch = Batch::new();
 
-    const TABLE: &str = "cloude_nat";
-    const CHAIN: &str = "cloude_postr";
+    if !table_exists {
+        batch.add(schema::NfListObject::Table(schema::Table {
+            family: types::NfFamily::IP,
+            name: NAT_TABLE.into(),
+            ..Default::default()
+        }));
+    }
 
-    // Create nat table
-    batch.add(schema::NfListObject::Table(schema::Table {
-        family: types::NfFamily::IP,
-        name: TABLE.into(),
-        ..Default::default()
-    }));
+    if !chain_exists {
+        batch.add(schema::NfListObject::Chain(schema::Chain {
+            family: types::NfFamily::IP,
+            table: NAT_TABLE.into(),
+            name: NAT_CHAIN.into(),
+            _type: Some(types::NfChainType::NAT),
+            hook: Some(types::NfHook::Postrouting),
+            prio: Some(1),
+            policy: Some(types::NfChainPolicy::Accept),
+            ..Default::default()
+        }));
+    }
 
-    // Create postrouting chain in nat table
-    batch.add(schema::NfListObject::Chain(schema::Chain {
-        family: types::NfFamily::IP,
-        table: TABLE.into(),
-        name: CHAIN.into(),
-        _type: Some(types::NfChainType::NAT),
-        hook: Some(types::NfHook::Postrouting),
-        prio: Some(1),
-        policy: Some(types::NfChainPolicy::Accept),
-        ..Default::default()
-    }));
-
-    // Add masquerade rule to postrouting chain (only for bridge network traffic)
-    batch.add(schema::NfListObject::Rule(schema::Rule {
-        family: types::NfFamily::IP,
-        table: TABLE.into(),
-        chain: CHAIN.into(),
-        expr: vec![
-            Statement::Match(Match {
-                left: Expression::Named(NamedExpression::Payload(Payload::PayloadField(
-                    PayloadField {
-                        protocol: "ip".into(),
-                        field: "saddr".into(),
-                    },
-                ))),
-                right: Expression::Named(NamedExpression::Prefix(Prefix {
-                    addr: Box::new(Expression::String("192.168.39.0".into())),
-                    len: 24,
-                })),
-                op: Operator::EQ,
-            }),
-            // Action: masquerade
-            Statement::Masquerade(None),
-        ]
-        .into(),
-        ..Default::default()
-    }));
+    if !rule_exists {
+        batch.add(schema::NfListObject::Rule(schema::Rule {
+            family: types::NfFamily::IP,
+            table: NAT_TABLE.into(),
+            chain: NAT_CHAIN.into(),
+            expr: vec![
+                Statement::Match(Match {
+                    left: Expression::Named(NamedExpression::Payload(Payload::PayloadField(
+                        PayloadField {
+                            protocol: "ip".into(),
+                            field: "saddr".into(),
+                        },
+                    ))),
+                    right: Expression::Named(NamedExpression::Prefix(Prefix {
+                        addr: Box::new(Expression::String(cidr_base.to_string().into())),
+                        len: u32::from(ip_mask),
+                    })),
+                    op: Operator::EQ,
+                }),
+                Statement::Masquerade(None),
+            ]
+            .into(),
+            ..Default::default()
+        }));
+    }
 
     helper::apply_ruleset(&batch.to_nftables())?;
-    debug!("NAT rules setup complete");
+    debug!("NAT rules setup complete for {}/{}", cidr_base, ip_mask);
     Ok(())
 }
 
