@@ -4,7 +4,7 @@ Serverless Rust program to run code from clients in micro-vm
 
 ## Table of contents
 
-- [Cloude](#Cloude)
+- [Cloude](#cloude)
   - [Table of contents](#table-of-contents)
   - [Architecture](#architecture)
     - [Initramfs Builder](#initrams-builder)
@@ -96,7 +96,7 @@ It brings methods to create VMs, handle virtio device creation, assign IP, manag
 
 The backend is an API that receives HTTP requests with language and code to execute.
 It will create a VM and send the order of execution before returning the output.
-Because we can receive multiple requests at the same time we can have multiple VM and so multiple agent to handle at the same time with unique IP for each one.
+Because we can receive multiple requests at the same time we can have multiple VM and so multiple agents to handle at the same time with unique IP for each one.
 
 **Features :**
 - User send requests to the specified route
@@ -107,8 +107,8 @@ Because we can receive multiple requests at the same time we can have multiple V
 ### Agent
 
 The agent is in charge of receiving code to execute, start it and wait for the complete execution.
-Each VM has an agent that starts a webserver to receive the requests on a specific port.
-When the backend starts a VM the agent starts in it and wait for the orders, the backend send the order through the IP of the VM and the agent receives it.
+Each VM has an agent that starts a web server to receive the requests on a specific port.
+When the backend starts a VM, the agent starts in it and wait for the orders, the backend sends the order through the IP of the VM and the agent receives it.
 
 **Features :**
 - The code to execute is received from the backend
