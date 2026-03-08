@@ -17,6 +17,16 @@ fn same_subnet(ip1: Ipv4Addr, ip2: Ipv4Addr, prefix_len: u8) -> bool {
     (u32::from(ip1) & mask) == (u32::from(ip2) & mask)
 }
 
+/// Return network base address from an IP and prefix length.
+fn network_addr(ip: Ipv4Addr, prefix_len: u8) -> Ipv4Addr {
+    let mask = if prefix_len == 0 {
+        0
+    } else {
+        u32::MAX << (32 - u32::from(prefix_len))
+    };
+    (u32::from(ip) & mask).into()
+}
+
 fn get_env_ip(var_name: &str) -> Result<Option<Ipv4Addr>, std::io::Error> {
     match env::var(var_name) {
         Ok(val) => val.parse().map(Some).map_err(|e| {
@@ -102,7 +112,8 @@ async fn main() {
                 return eprintln!("Error: Guest IP and Host IP are not in the same subnet");
             }
 
-            virt::network::setup_nat(guest_ip, prefix).expect("Failed to set up NAT");
+            let network = network_addr(guest_ip, prefix);
+            virt::network::setup_nat(network, prefix).expect("Failed to set up NAT");
 
             virt::network::setup_guest_iface(&tap_name, "cloudebrtest")
                 .await
