@@ -79,7 +79,8 @@ The initramfs builder handles all the process of creating the image that will be
 It will bring dependancies for languages
 
 **Features :**
-- 
+- Generates an initramfs from an OCI (docker) image
+- Can generate an image depending of the language given
 
 ### VMM
 
