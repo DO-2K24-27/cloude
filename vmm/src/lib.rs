@@ -8,6 +8,7 @@ extern crate linux_loader;
 extern crate vm_memory;
 extern crate vm_superio;
 
+use std::net::Ipv4Addr;
 use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -206,9 +207,9 @@ impl VMM {
     pub fn add_net_device(
         &mut self,
         tap_name: String,
-        guest_ip: Option<&str>,
-        host_ip: Option<&str>,
-        netmask: Option<&str>,
+        guest_ip: Option<Ipv4Addr>,
+        host_ip: Option<Ipv4Addr>,
+        netmask: Option<Ipv4Addr>,
     ) -> Result<()> {
         let allocated_range: RangeInclusive = self
             .virtio_mmio_allocator

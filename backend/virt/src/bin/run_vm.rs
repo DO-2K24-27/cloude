@@ -6,11 +6,32 @@
 // HOST_IP=<ip_address> - optional, host IP address
 // NETMASK=<mask> - optional, network mask
 
-use std::env;
+use std::{env, net::Ipv4Addr};
 use tracing_subscriber::EnvFilter;
 use vmm::{VMInput, VMM};
 use vmm_sys_util::terminal::Terminal;
 
+/// Check if IPv4 are in the same subnet
+fn same_subnet(ip1: Ipv4Addr, ip2: Ipv4Addr, prefix_len: u8) -> bool {
+    let mask = !0u32 << (32 - prefix_len);
+    (u32::from(ip1) & mask) == (u32::from(ip2) & mask)
+}
+
+fn get_env_ip(var_name: &str) -> Result<Option<Ipv4Addr>, std::io::Error> {
+    match env::var(var_name) {
+        Ok(val) => val.parse().map(Some).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{} env variable is unvalid: {}", var_name, e),
+            )
+        }),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(e) => Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("Error getting {}: {}", var_name, e),
+        )),
+    }
+}
 #[tokio::main]
 async fn main() {
     // init logging
@@ -61,24 +82,27 @@ async fn main() {
 
     // Add network device if enabled
     if let Some(tap_name) = env::var("TAP_DEVICE").ok() {
-        let guest_ip = env::var("GUEST_IP").ok();
-        let host_ip = env::var("HOST_IP").ok();
-        let netmask = env::var("NETMASK").ok();
+        let guest_ip = get_env_ip("GUEST_IP").unwrap();
+        let host_ip = get_env_ip("HOST_IP").unwrap();
+        let netmask = get_env_ip("NETMASK").unwrap(); // in the form 255.255.255.0
 
-        if let Err(e) = vmm.add_net_device(
-            tap_name.clone(),
-            guest_ip.as_deref(),
-            host_ip.as_deref(),
-            netmask.as_deref(),
-        ) {
+        if let Err(e) = vmm.add_net_device(tap_name.clone(), guest_ip, host_ip, netmask) {
             return eprintln!("Error adding net device: {:?}", e);
         }
 
         // If an host IP is set, setup the bridge for it
-        if let Some(host_ip) = host_ip.as_deref() {
-            virt::network::setup_bridge("cloudebrtest".to_string(), host_ip.parse().unwrap(), 24)
+        if let (Some(guest_ip), Some(host_ip), Some(netmask)) = (guest_ip, host_ip, netmask) {
+            virt::network::setup_bridge("cloudebrtest".to_string(), host_ip, 24)
                 .await
                 .expect("Failed to set up bridge");
+
+            let prefix = u32::from(netmask).leading_ones() as u8;
+
+            if !same_subnet(guest_ip, host_ip, prefix) {
+                return eprintln!("Error: Guest IP and Host IP are not in the same subnet");
+            }
+
+            virt::network::setup_nat(guest_ip, prefix).expect("Failed to set up NAT");
 
             virt::network::setup_guest_iface(&tap_name, "cloudebrtest")
                 .await
