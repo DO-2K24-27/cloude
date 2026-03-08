@@ -6,7 +6,7 @@ Serverless Rust program to run code from clients in micro-vm
 
 - [Cloude](#Cloude)
   - [Table of contents](#table-of-contents)
-  - [Dependancies](#dependancies)
+  - [Dependencies](#dependencies)
   - [Architecture](#architecture)
     - [Initramfs Builder](#initrams-builder)
     - [VMM](#vmm)
@@ -16,7 +16,7 @@ Serverless Rust program to run code from clients in micro-vm
   - [Components lifetime](#components-lifetime)
   - [License](#licence)
 
-## Dependancies
+## Dependencies
 
 Cloud is written in Rust and makes use of the following libraries :
 - anyhow
