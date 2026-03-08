@@ -92,12 +92,20 @@ In a more graphical way this is the architecture of the project :
     |  | Return Output      |  |
     |  +---------+----------+  |
     |                          |
-    |  +---------+----------+  |
-    |  |   Initramfs Builder | |
+    |  +---------+-----------+ |
+    |  | Initramfs           | |
     |  | Kernel + Runtime    | |
     |  | Dependencies        | |
-    |  +--------------------+  |
+    |  +---------------------+ |
     +--------------------------+
+                |
+                |
+    +----------+-----------+
+    |   Initramfs Builder  |
+    | Build initramfs file |
+    | Dependencies         |
+    +----------------------+
+
 
 ### Initramfs Builder
 
