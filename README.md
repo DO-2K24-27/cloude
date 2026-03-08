@@ -95,6 +95,7 @@ It brings methods to create VMs, handle virtio device creation, assign IP, manag
 
 The backend is an API that receives HTTP requests with language and code to execute.
 It will create a VM and send the order of execution before returning the output.
+Because we can receive multiple requests at the same time we can have multiple VM and so multiple agent to handle at the same time with unique IP for each one.
 
 **Features :**
 - User send requests to the specified route
