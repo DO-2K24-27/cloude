@@ -31,20 +31,19 @@ enum JobStatus {
     Error,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 struct Job {
     id: String,
     status: JobStatus,
     language: String,
-    #[serde(skip_serializing)]
-    #[allow(dead_code)]
-    code: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     exit_code: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stdout: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stderr: Option<String>,
+    #[serde(skip)]
+    created_at: std::time::Instant,
 }
 
 // ── Request / Response DTOs ─────────────────────────────────────────
@@ -101,6 +100,26 @@ async fn main() -> Result<(), std::io::Error> {
         client,
     });
 
+    // Background task: evict terminal jobs older than 5mins
+    const JOB_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+    let cleanup_state = Arc::clone(&state);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            let mut jobs = cleanup_state.jobs.write().await;
+            let before = jobs.len();
+            jobs.retain(|_, j| {
+                !matches!(j.status, JobStatus::Done | JobStatus::Error)
+                    || j.created_at.elapsed() < JOB_TTL
+            });
+            let removed = before - jobs.len();
+            if removed > 0 {
+                info!("Evicted {} expired jobs", removed);
+            }
+        }
+    });
+
     let app = Router::new()
         .route("/", get(root))
         .route("/health", get(health_check))
@@ -136,10 +155,10 @@ async fn run_job(
         id: id.clone(),
         status: JobStatus::Pending,
         language: payload.language.clone(),
-        code: payload.code.clone(),
         exit_code: None,
         stdout: None,
         stderr: None,
+        created_at: std::time::Instant::now(),
     };
 
     // Store the job
