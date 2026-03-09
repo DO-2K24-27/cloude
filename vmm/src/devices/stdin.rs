@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
 use std::os::fd::AsRawFd;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use event_manager::{EventOps, Events, MutEventSubscriber};
@@ -22,11 +23,12 @@ impl AsRawFd for FdWrapper {
 pub struct StdinHandler {
     input: Box<dyn VMInput>,
     serial: Arc<Mutex<LumperSerial>>,
+    running: Arc<AtomicBool>,
 }
 
 impl StdinHandler {
-    pub fn new(input: Box<dyn VMInput>, serial: Arc<Mutex<LumperSerial>>) -> Self {
-        StdinHandler { input, serial }
+    pub fn new(input: Box<dyn VMInput>, serial: Arc<Mutex<LumperSerial>>, running: Arc<AtomicBool>) -> Self {
+        StdinHandler { input, serial, running }
     }
 }
 
@@ -41,6 +43,13 @@ impl MutEventSubscriber for StdinHandler {
                 let mut out = [0u8; 64];
                 match self.input.read(&mut out) {
                     Ok(n) if n > 0 => {
+                        // Catch Ctrl+C (0x03) from terminal to gracefully shutdown the VM.
+                        if out[..n].contains(&0x03) {
+                            println!("\r\nGuest shutdown: Shutdown. Bye!\r\n");
+                            self.running.store(false, Ordering::SeqCst);
+                            return;
+                        }
+
                         if let Err(e) = self
                             .serial
                             .lock()
