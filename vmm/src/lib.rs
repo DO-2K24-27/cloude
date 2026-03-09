@@ -133,9 +133,11 @@ impl VMM {
             LumperSerial::new(output).map_err(Error::SerialCreation)?,
         ));
 
+        let running = Arc::new(AtomicBool::new(true));
+
         // Create stdin handler and add it to event manager
         let stdin_handler: Arc<Mutex<dyn MutEventSubscriber>> =
-            Arc::new(Mutex::new(StdinHandler::new(input, serial.clone())));
+            Arc::new(Mutex::new(StdinHandler::new(input, serial.clone(), Arc::clone(&running))));
         event_manager.add_subscriber(stdin_handler);
 
         let mut vmm = VMM {
@@ -149,7 +151,7 @@ impl VMM {
             cmdline_components: Vec::new(),
             event_manager,
             irq_allocator: IrqAllocator::new(5),
-            running: Arc::new(AtomicBool::new(true)),
+            running,
             vcpu_handles: Vec::new(),
             vcpu_thread_ids: Arc::new(Mutex::new(Vec::new())),
         };
@@ -327,9 +329,10 @@ impl VMM {
         }
         drop(tids);
 
-        for handle in self.vcpu_handles.drain(..) {
-            let _ = handle.join();
-        }
+        // Clear the thread handles and IDs without joining them.
+        // This delegates the thread cleanup to the OS process termination,
+        // avoiding deadlocks if a vCPU is unresponsive in KVM_RUN.
+        self.vcpu_handles.clear();
         self.vcpu_thread_ids.lock().unwrap().clear();
     }
 
@@ -361,6 +364,12 @@ impl VMM {
     /// Stop the VM by signaling all threads to exit.
     pub fn stop(&self) {
         self.running.store(false, Ordering::SeqCst);
+    }
+
+    /// Retrieve the running flag so it can be mutated asynchronously safely by an external
+    /// process (e.g. signal handler).
+    pub fn get_running_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.running)
     }
 
     pub fn configure(
