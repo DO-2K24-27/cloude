@@ -177,6 +177,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "virt",
+ "vmm",
 ]
 
 [[package]]

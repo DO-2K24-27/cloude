@@ -363,6 +363,13 @@ impl VMM {
         self.running.store(false, Ordering::SeqCst);
     }
 
+    /// Return a clone of the running flag so that an external owner can
+    /// stop the VM without holding a reference to the whole VMM struct.
+    /// Useful when the VMM is moved into a background thread.
+    pub fn stopper(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.running)
+    }
+
     pub fn configure(
         &mut self,
         num_vcpus: u8,

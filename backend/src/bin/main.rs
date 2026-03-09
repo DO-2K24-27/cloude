@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::env;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::net::TcpListener;
 use tokio::process::Command;
 use tokio::sync::RwLock;
@@ -18,6 +19,7 @@ use tokio::time::Duration;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 use virt::network::{setup_bridge, setup_guest_iface, setup_nat};
+use vmm::VMM;
 
 // ── Shared application state ────────────────────────────────────────
 
@@ -378,26 +380,43 @@ async fn vm_lifecycle(
         return Err(msg);
     }
 
-    // ── 3. Boot VM ───────────────────────────────────────────────────
-    let mut qemu = match spawn_vm_qemu(state, &tap_name, &vm_ip).await {
-        Ok(child) => child,
+    // ── 3. Démarrer la VM via le VMM du workspace ────────────────────
+    let vm_ip_addr: Ipv4Addr = match vm_ip.parse() {
+        Ok(a) => a,
+        Err(e) => {
+            cleanup_vm(&tap_name, job_id, &state.ip_manager).await;
+            return Err(format!("Invalid VM IP '{}': {}", vm_ip, e));
+        }
+    };
+
+    let (vm_handle, vm_stopper) = match start_vm(
+        state.kernel_path.clone(),
+        state.agent_initramfs.clone(),
+        tap_name.clone(),
+        vm_ip_addr,
+        state.host_ip,
+        state.netmask,
+    )
+    .await
+    {
+        Ok(r) => r,
         Err(msg) => {
             cleanup_vm(&tap_name, job_id, &state.ip_manager).await;
             return Err(msg);
         }
     };
-    info!("Job {} – QEMU started (TAP={})", job_id, tap_name);
+    info!("Job {} – VM démarrée via VMM (TAP={})", job_id, tap_name);
 
-    // ── 4. Wait for agent health ─────────────────────────────────────
+    // ── 4. Attendre que l'agent soit prêt ───────────────────────────
     let agent_base = format!("http://{}:{}", vm_ip, state.agent_port);
     if let Err(msg) = poll_agent_health(&state.client, &agent_base).await {
-        let _ = qemu.kill().await;
+        stop_vm(vm_stopper, vm_handle).await;
         cleanup_vm(&tap_name, job_id, &state.ip_manager).await;
         return Err(msg);
     }
-    info!("Job {} – agent is healthy at {}", job_id, agent_base);
+    info!("Job {} – agent prêt à {}", job_id, agent_base);
 
-    // ── 5. Execute code ──────────────────────────────────────────────
+    // ── 5. Envoyer le code à l'agent ────────────────────────────────
     let execute_result = state
         .client
         .post(format!("{}/execute", agent_base))
@@ -408,8 +427,8 @@ async fn vm_lifecycle(
         .send()
         .await;
 
-    // ── 6. Cleanup (always) ──────────────────────────────────────────
-    let _ = qemu.kill().await;
+    // ── 6. Arrêter la VM + cleanup (toujours) ───────────────────────
+    stop_vm(vm_stopper, vm_handle).await;
     cleanup_vm(&tap_name, job_id, &state.ip_manager).await;
 
     // Process result after cleanup so we don't leave orphan TAPs on error
@@ -473,55 +492,102 @@ async fn delete_tap_device(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-// ── Helpers: QEMU ─────────────────────────────────────────────────────
+// ── Helpers: VMM ─────────────────────────────────────────────────────
 
-/// Spawn a QEMU process that boots the agent initramfs and exposes a
-/// VirtIO NIC backed by the given TAP device.
+/// Crée un VMM (KVM direct) dans un thread dédié et renvoie :
+/// - un `JoinHandle` pour attendre la fin du thread
+/// - un `Arc<AtomicBool>` (stopper) pour ordonner l'arrêt de la VM
 ///
-/// The kernel receives the guest IP configuration via the `ip=` cmdline
-/// parameter so the agent's HTTP server is reachable from the host as
-/// soon as the VM boots.
-async fn spawn_vm_qemu(
-    state: &Arc<AppState>,
-    tap_name: &str,
-    vm_ip: &str,
-) -> Result<tokio::process::Child, String> {
-    // ip=<guest_ip>::<gw>:<netmask>::eth0:off
-    let ip_param = format!(
-        "ip={}::{}:{}::eth0:off",
-        vm_ip, state.host_ip, state.netmask
-    );
-    let cmdline = format!("console=ttyS0 panic=1 reboot=t {} quiet", ip_param);
+/// Le VMM est créé *à l'intérieur* du thread pour contourner
+/// le fait que `VMM` n'implémente pas `Send` (trait objects internes).
+/// La configuration (Send + 'static) est passée en paramètres.
+async fn start_vm(
+    kernel_path: String,
+    initramfs_path: String,
+    tap_name: String,
+    vm_ip: Ipv4Addr,
+    host_ip: Ipv4Addr,
+    netmask: Ipv4Addr,
+) -> Result<(std::thread::JoinHandle<()>, Arc<AtomicBool>), String> {
+    // Canal one-shot : le thread envoie le stopper dès que le VMM est
+    // configuré (avant de lancer vmm.run()) pour que l'appelant puisse
+    // arrêter la VM depuis un autre thread.
+    let (stopper_tx, stopper_rx) =
+        tokio::sync::oneshot::channel::<Result<Arc<AtomicBool>, String>>();
 
-    let child = Command::new("qemu-system-x86_64")
-        .arg("-kernel")
-        .arg(&state.kernel_path)
-        .arg("-initrd")
-        .arg(&state.agent_initramfs)
-        .arg("-append")
-        .arg(cmdline)
-        .arg("-m")
-        .arg("256M")
-        .arg("-nographic")
-        .arg("-no-reboot")
-        // VirtIO network card backed by the TAP interface
-        .arg("-device")
-        .arg("virtio-net-pci,netdev=net0")
-        .arg("-netdev")
-        .arg(format!(
-            "tap,id=net0,ifname={},script=no,downscript=no",
-            tap_name
-        ))
-        // VirtIO RNG to speed up entropy collection at boot
-        .arg("-device")
-        .arg("virtio-rng-pci")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| format!("Failed to spawn QEMU: {}", e))?;
+    let handle = std::thread::Builder::new()
+        .name(format!("vm-{}", tap_name))
+        .spawn(move || {
+            // Stdin : /dev/null (la VM n'est pas interactive)
+            let stdin = match std::fs::File::open("/dev/null") {
+                Ok(f) => f,
+                Err(e) => {
+                    let _ = stopper_tx.send(Err(format!("open /dev/null: {}", e)));
+                    return;
+                }
+            };
 
-    Ok(child)
+            // Crée le VMM avec 256 Mio de RAM ; sortie série ignorée
+            // (on utilise HTTP pour parler à l'agent).
+            let mut vmm = match VMM::new(
+                Box::new(stdin),
+                Box::new(std::io::sink()),
+                256 << 20, // 256 MiB
+            ) {
+                Ok(v) => v,
+                Err(e) => {
+                    let _ = stopper_tx.send(Err(format!("VMM::new: {:?}", e)));
+                    return;
+                }
+            };
+
+            // Attache la carte réseau VirtIO au TAP.
+            // Le VMM génère automatiquement le paramètre ip= dans la cmdline.
+            if let Err(e) =
+                vmm.add_net_device(tap_name.clone(), Some(vm_ip), Some(host_ip), Some(netmask))
+            {
+                let _ = stopper_tx.send(Err(format!("add_net_device: {:?}", e)));
+                return;
+            }
+
+            // Charge le kernel + initramfs en mémoire guest (2 vCPUs)
+            if let Err(e) = vmm.configure(2, &kernel_path, &initramfs_path, None) {
+                let _ = stopper_tx.send(Err(format!("configure: {:?}", e)));
+                return;
+            }
+
+            // Expose le stopper AVANT vmm.run()
+            let stopper = vmm.stopper();
+            let _ = stopper_tx.send(Ok(stopper));
+            // stopper_tx est détruit ici.
+
+            // Démarre la VM ; bloque jusqu'à ce que le guest s'arrête
+            // (VcpuExit::Shutdown | Hlt → running = false → run() retourne).
+            vmm.run();
+            info!("VM thread terminé (tap={})", tap_name);
+        })
+        .map_err(|e| format!("thread spawn failed: {}", e))?;
+
+    // Attend la confirmation ou l'erreur d'init du VMM
+    let stopper = stopper_rx
+        .await
+        .map_err(|_| "Le thread VMM s'est arrêté avant d'envoyer le stopper".to_string())?
+        .map_err(|e| e)?;
+
+    Ok((handle, stopper))
+}
+
+/// Signale à la VM de s'arrêter (stopper = false) puis attend la fin
+/// du thread (timeout 10 s).
+async fn stop_vm(stopper: Arc<AtomicBool>, handle: std::thread::JoinHandle<()>) {
+    stopper.store(false, Ordering::SeqCst);
+    let _ = tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio::task::spawn_blocking(move || {
+            let _ = handle.join();
+        }),
+    )
+    .await;
 }
 
 // ── Helpers: agent health polling ────────────────────────────────────
