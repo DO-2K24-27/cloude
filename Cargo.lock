@@ -168,12 +168,14 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "uuid",
  "virt",
+ "vmm",
 ]
 
 [[package]]
