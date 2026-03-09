@@ -25,6 +25,7 @@ Cloude is made up of 5 parts. They are assembled together to create the flow of 
 - `cli` constitute the last brick that is the user interface and allow sending requests to backend through HTTP
 
 In a more graphical way this is the architecture of the project :
+```
         +------------------+
         |       CLI        |
         |  User Interface  |
@@ -71,7 +72,7 @@ In a more graphical way this is the architecture of the project :
     | Build initramfs file |
     | Dependencies         |
     +----------------------+
-
+```
 
 ### Initramfs Builder
 
