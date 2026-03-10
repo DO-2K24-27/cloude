@@ -16,7 +16,7 @@ impl LanguageRuntime for JavaRuntime {
     }
 
     fn compile_command(&self) -> Option<&'static str> {
-        Some("javac -d /lambda /lambda/code.java && jar cfe /lambda/bin.jar Main -C /lambda .")
+        Some("mv /lambda/code.java /lambda/Main.java && javac -d /lambda /lambda/Main.java && jar cfe /lambda/bin.jar Main -C /lambda .")
     }
 
     fn execute_path(&self) -> Option<&'static str> {
