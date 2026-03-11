@@ -1,26 +1,27 @@
-use agent::builder::image::Builder;
-use agent::qemu::QemuRunner;
 use agent::runtimes::{LanguageRuntime, runtime_from_language};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use axum::{
     Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::get,
     routing::post,
 };
-use tracing::info;
 use serde::{Deserialize, Serialize};
-use tracing_subscriber::EnvFilter;
 use std::env;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::net::TcpListener;
+use tokio::process::Command;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::time::{Duration, timeout};
+use tracing::info;
+use tracing_subscriber::EnvFilter;
 
 struct AppState {
     job_counter: AtomicU64,
     run_limit: Arc<Semaphore>,
     work_dir: PathBuf,
-    kernel_path: PathBuf,
+    exec_timeout: Duration,
 }
 
 #[derive(Debug, Deserialize)]
@@ -42,33 +43,34 @@ struct ErrorResponse {
     error: String,
 }
 
+struct ExecutionResult {
+    exit_code: i32,
+    stdout: String,
+    stderr: String,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    // init logging
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
-    log::debug!("Debug logging enabled");
 
     let server_addr =
         env::var("AGENT_SERVER_ADDR").unwrap_or_else(|_| "127.0.0.1:3001".to_string());
     let work_dir =
         PathBuf::from(env::var("AGENT_WORK_DIR").unwrap_or_else(|_| "build".to_string()));
-    let kernel_path = resolve_kernel_path()?;
-    if !kernel_path.exists() {
-        anyhow::bail!(
-            "Configured kernel path does not exist: {:?}. Set AGENT_KERNEL_PATH correctly.",
-            kernel_path
-        );
-    }
+    let timeout_secs = env::var("AGENT_EXEC_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(30);
 
     let state = Arc::new(AppState {
         job_counter: AtomicU64::new(1),
         run_limit: Arc::new(Semaphore::new(1)),
         work_dir,
-        kernel_path,
+        exec_timeout: Duration::from_secs(timeout_secs),
     });
 
     let app = Router::new()
@@ -133,19 +135,19 @@ async fn execute(
             .into_response();
     }
 
-    let kernel_path = state.kernel_path.clone();
-    let result = match execute_job(&kernel_path, runtime.as_ref(), &source_path, &job_dir).await {
-        Ok(result) => result,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: e.to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
+    let result =
+        match execute_job(runtime.as_ref(), &source_path, &job_dir, state.exec_timeout).await {
+            Ok(result) => result,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
 
     (
         StatusCode::OK,
@@ -157,14 +159,6 @@ async fn execute(
         }),
     )
         .into_response()
-}
-
-fn resolve_kernel_path() -> Result<PathBuf> {
-    if let Ok(path) = env::var("AGENT_KERNEL_PATH") {
-        return Ok(PathBuf::from(path));
-    }
-
-    anyhow::bail!("Missing AGENT_KERNEL_PATH. Configure a server-side kernel path before start.")
 }
 
 async fn acquire_run_permit(
@@ -189,27 +183,73 @@ async fn acquire_run_permit(
 }
 
 async fn execute_job(
-    kernel_path: &Path,
     runtime: &dyn LanguageRuntime,
-    code_file: &Path,
+    source_path: &Path,
     work_dir: &Path,
-) -> Result<agent::qemu::ExecutionResult> {
-    if !kernel_path.exists() {
-        anyhow::bail!("Kernel not found: {:?}", kernel_path);
+    exec_timeout: Duration,
+) -> Result<ExecutionResult> {
+    if let Some((program, args)) = runtime.compile_step(source_path, work_dir) {
+        let compile_result = run_process(&program, &args, work_dir, exec_timeout).await?;
+        if compile_result.exit_code != 0 {
+            return Ok(compile_result);
+        }
     }
 
-    let builder = Builder::new(work_dir);
+    let (program, args) = runtime.run_step(source_path, work_dir);
+    run_process(&program, &args, work_dir, exec_timeout).await
+}
 
-    info!(
-        "Building initramfs for runtime {}",
-        runtime.source_extension()
-    );
-    let initramfs_path = builder.build_image(runtime, code_file).await?;
+async fn run_process(
+    program: &str,
+    args: &[String],
+    work_dir: &Path,
+    exec_timeout: Duration,
+) -> Result<ExecutionResult> {
+    let mut cmd = Command::new(program);
+    cmd.args(args)
+        .current_dir(work_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
 
-    info!(
-        "Booting QEMU for {:?} with kernel {:?} and initramfs {:?}",
-        code_file, kernel_path, initramfs_path
-    );
-    let runner = QemuRunner::new(kernel_path);
-    runner.run_initramfs(&initramfs_path).await
+    let child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(primary_err) if program == "python3" => {
+            let mut fallback = Command::new("/usr/local/bin/python3");
+            fallback
+                .args(args)
+                .current_dir(work_dir)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
+            fallback.spawn().with_context(|| {
+                format!(
+                    "Failed to spawn process: {} (fallback /usr/local/bin/python3 also failed: {})",
+                    program, primary_err
+                )
+            })?
+        }
+        Err(err) => {
+            return Err(err).with_context(|| format!("Failed to spawn process: {}", program));
+        }
+    };
+
+    let output = timeout(exec_timeout, child.wait_with_output())
+        .await
+        .with_context(|| {
+            format!(
+                "Process timed out after {}s: {}",
+                exec_timeout.as_secs(),
+                program
+            )
+        })?
+        .with_context(|| format!("Process failed while waiting for output: {}", program))?;
+
+    Ok(ExecutionResult {
+        exit_code: output.status.code().unwrap_or(1),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
 }
