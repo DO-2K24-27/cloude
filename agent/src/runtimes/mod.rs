@@ -6,20 +6,16 @@ pub mod node;
 pub mod python;
 pub mod rust;
 
+use std::path::Path;
+
 pub trait LanguageRuntime: Send + Sync {
-    fn base_image(&self) -> &'static str;
-
-    fn run_command(&self) -> &'static str;
-
     fn source_extension(&self) -> &'static str;
 
-    fn compile_command(&self) -> Option<&'static str> {
+    fn compile_step(&self, _source_path: &Path, _work_dir: &Path) -> Option<(String, Vec<String>)> {
         None
     }
 
-    fn execute_path(&self) -> Option<&'static str> {
-        None
-    }
+    fn run_step(&self, source_path: &Path, work_dir: &Path) -> (String, Vec<String>);
 }
 
 pub type RuntimeBox = Box<dyn LanguageRuntime + Send + Sync>;

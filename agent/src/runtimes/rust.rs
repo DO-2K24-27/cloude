@@ -1,25 +1,26 @@
 use super::LanguageRuntime;
+use std::path::Path;
 
 pub struct RustRuntime;
 
 impl LanguageRuntime for RustRuntime {
-    fn base_image(&self) -> &'static str {
-        "rust:alpine"
-    }
-
-    fn run_command(&self) -> &'static str {
-        "/lambda/bin"
-    }
-
     fn source_extension(&self) -> &'static str {
         "rs"
     }
 
-    fn compile_command(&self) -> Option<&'static str> {
-        Some("rustc -o /lambda/bin /lambda/code.rs")
+    fn compile_step(&self, source_path: &Path, work_dir: &Path) -> Option<(String, Vec<String>)> {
+        let output = work_dir.join("bin");
+        Some((
+            "rustc".to_string(),
+            vec![
+                "-o".to_string(),
+                output.display().to_string(),
+                source_path.display().to_string(),
+            ],
+        ))
     }
 
-    fn execute_path(&self) -> Option<&'static str> {
-        Some("/lambda/bin")
+    fn run_step(&self, _source_path: &Path, work_dir: &Path) -> (String, Vec<String>) {
+        (work_dir.join("bin").display().to_string(), vec![])
     }
 }
