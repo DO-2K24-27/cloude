@@ -5,13 +5,8 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.102"
-initramfs-builder = { version = "0.2.1" }
 axum = "0.8.8"
 serde = { version = "1.0.228", features = ["derive"] }
 tokio = { version = "1.49.0", features = ["full"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
-uuid = { version = "1.12.1", features = ["v4"] }
-regex = "1.10"
-log = "0.4.29"
-
