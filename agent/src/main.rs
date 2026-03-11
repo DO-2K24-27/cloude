@@ -14,7 +14,7 @@ use tokio::net::TcpListener;
 use tokio::process::Command;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::{Duration, timeout};
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 struct AppState {
@@ -126,6 +126,7 @@ async fn execute(
 
     let source_path = job_dir.join(format!("code.{}", runtime.source_extension()));
     if let Err(e) = tokio::fs::write(&source_path, payload.code).await {
+        schedule_job_cleanup(job_dir.clone());
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
@@ -139,6 +140,7 @@ async fn execute(
         match execute_job(runtime.as_ref(), &source_path, &job_dir, state.exec_timeout).await {
             Ok(result) => result,
             Err(e) => {
+                schedule_job_cleanup(job_dir.clone());
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponse {
@@ -148,6 +150,8 @@ async fn execute(
                     .into_response();
             }
         };
+
+    schedule_job_cleanup(job_dir);
 
     (
         StatusCode::OK,
@@ -159,6 +163,14 @@ async fn execute(
         }),
     )
         .into_response()
+}
+
+fn schedule_job_cleanup(job_dir: PathBuf) {
+    tokio::spawn(async move {
+        if let Err(err) = tokio::fs::remove_dir_all(&job_dir).await {
+            warn!(path = %job_dir.display(), error = %err, "Failed to remove job directory");
+        }
+    });
 }
 
 async fn acquire_run_permit(
@@ -189,67 +201,62 @@ async fn execute_job(
     exec_timeout: Duration,
 ) -> Result<ExecutionResult> {
     if let Some((program, args)) = runtime.compile_step(source_path, work_dir) {
-        let compile_result = run_process(&program, &args, work_dir, exec_timeout).await?;
+        let compile_result =
+            run_process_candidates(&[(program, args)], work_dir, exec_timeout).await?;
         if compile_result.exit_code != 0 {
             return Ok(compile_result);
         }
     }
 
-    let (program, args) = runtime.run_step(source_path, work_dir);
-    run_process(&program, &args, work_dir, exec_timeout).await
+    run_process_candidates(
+        &runtime.run_candidates(source_path, work_dir),
+        work_dir,
+        exec_timeout,
+    )
+    .await
 }
 
-async fn run_process(
-    program: &str,
-    args: &[String],
+async fn run_process_candidates(
+    commands: &[(String, Vec<String>)],
     work_dir: &Path,
     exec_timeout: Duration,
 ) -> Result<ExecutionResult> {
-    let mut cmd = Command::new(program);
-    cmd.args(args)
-        .current_dir(work_dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+    let mut last_error = None;
 
-    let child = match cmd.spawn() {
-        Ok(child) => child,
-        Err(primary_err) if program == "python3" => {
-            let mut fallback = Command::new("/usr/local/bin/python3");
-            fallback
-                .args(args)
-                .current_dir(work_dir)
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .kill_on_drop(true);
-            fallback.spawn().with_context(|| {
-                format!(
-                    "Failed to spawn process: {} (fallback /usr/local/bin/python3 also failed: {})",
-                    program, primary_err
-                )
-            })?
+    for (program, args) in commands {
+        let mut cmd = Command::new(program);
+        cmd.args(args)
+            .current_dir(work_dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+
+        match cmd.spawn() {
+            Ok(child) => {
+                let output = timeout(exec_timeout, child.wait_with_output())
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "Process timed out after {}s: {}",
+                            exec_timeout.as_secs(),
+                            program
+                        )
+                    })?
+                    .with_context(|| {
+                        format!("Process failed while waiting for output: {}", program)
+                    })?;
+
+                return Ok(ExecutionResult {
+                    exit_code: output.status.code().unwrap_or(1),
+                    stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+                    stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                });
+            }
+            Err(err) => last_error = Some((program.clone(), err)),
         }
-        Err(err) => {
-            return Err(err).with_context(|| format!("Failed to spawn process: {}", program));
-        }
-    };
+    }
 
-    let output = timeout(exec_timeout, child.wait_with_output())
-        .await
-        .with_context(|| {
-            format!(
-                "Process timed out after {}s: {}",
-                exec_timeout.as_secs(),
-                program
-            )
-        })?
-        .with_context(|| format!("Process failed while waiting for output: {}", program))?;
-
-    Ok(ExecutionResult {
-        exit_code: output.status.code().unwrap_or(1),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-    })
+    let (program, err) = last_error.context("No execution command candidate provided")?;
+    Err(err).with_context(|| format!("Failed to spawn process: {}", program))
 }
