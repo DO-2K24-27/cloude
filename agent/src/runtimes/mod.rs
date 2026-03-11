@@ -16,6 +16,10 @@ pub trait LanguageRuntime: Send + Sync {
     }
 
     fn run_step(&self, source_path: &Path, work_dir: &Path) -> (String, Vec<String>);
+
+    fn run_candidates(&self, source_path: &Path, work_dir: &Path) -> Vec<(String, Vec<String>)> {
+        vec![self.run_step(source_path, work_dir)]
+    }
 }
 
 pub type RuntimeBox = Box<dyn LanguageRuntime + Send + Sync>;
