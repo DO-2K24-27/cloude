@@ -1,8 +1,18 @@
 use crate::runtimes::LanguageRuntime;
 
+/// Generates the `/init` shell script that runs as PID 1 inside the VM.
+///
+/// The script mounts the essential pseudo-filesystems (proc, sysfs, devtmpfs),
+/// runs the user's code, and shuts the VM down cleanly via `poweroff -f`.
+/// Output is wrapped between `--- PROGRAM OUTPUT ---` / `--- END OUTPUT ---`
+/// markers so the agent can reliably extract it from the serial console stream.
 pub struct InitScriptGenerator;
 
 impl InitScriptGenerator {
+    /// Build the init script for a given runtime and source file path.
+    ///
+    /// For compiled languages, a compile step runs first — if it fails the VM
+    /// exits immediately without printing misleading output markers.
     pub fn generate_script(runtime: &dyn LanguageRuntime, code_path: &str) -> String {
         let mut script = String::from("#!/bin/sh\n\n");
 
@@ -46,8 +56,12 @@ impl InitScriptGenerator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtimes::{node::NodeRuntime, python::PythonRuntime, rust::RustRuntime};
+    use crate::runtimes::{
+        c::CRuntime, cpp::CppRuntime, go::GoRuntime, java::JavaRuntime, node::NodeRuntime,
+        python::PythonRuntime, rust::RustRuntime,
+    };
 
+    // Python: interpreted runtime, direct run, no compile step
     #[test]
     fn test_python_script_generation() {
         let runtime = PythonRuntime;
@@ -56,6 +70,7 @@ mod tests {
         assert!(script.contains("--- PROGRAM OUTPUT ---"));
     }
 
+    // Node: same as Python, no compile step
     #[test]
     fn test_node_script_generation() {
         let runtime = NodeRuntime;
@@ -64,6 +79,7 @@ mod tests {
         assert!(script.contains("--- PROGRAM OUTPUT ---"));
     }
 
+    // Rust: compiled runtime, checks compile exit code before running the binary
     #[test]
     fn test_rust_script_generation() {
         let runtime = RustRuntime;
@@ -72,5 +88,51 @@ mod tests {
         assert!(script.contains("COMPILE_EXIT=$?"));
         assert!(script.contains("if [ $COMPILE_EXIT -ne 0 ]; then"));
         assert!(script.contains("/lambda/bin"));
+    }
+
+    // C: compiled with gcc, same compile-guard pattern as Rust
+    #[test]
+    fn test_c_script_generation() {
+        let runtime = CRuntime;
+        let script = InitScriptGenerator::generate_script(&runtime, "/lambda/code.c");
+        assert!(script.contains("gcc -o /lambda/bin /lambda/code.c"));
+        assert!(script.contains("COMPILE_EXIT=$?"));
+        assert!(script.contains("if [ $COMPILE_EXIT -ne 0 ]; then"));
+        assert!(script.contains("/lambda/bin"));
+    }
+
+    // C++: compiled with g++, same compile-guard pattern as C
+    #[test]
+    fn test_cpp_script_generation() {
+        let runtime = CppRuntime;
+        let script = InitScriptGenerator::generate_script(&runtime, "/lambda/code.cpp");
+        assert!(script.contains("g++ -o /lambda/bin /lambda/code.cpp"));
+        assert!(script.contains("COMPILE_EXIT=$?"));
+        assert!(script.contains("if [ $COMPILE_EXIT -ne 0 ]; then"));
+        assert!(script.contains("/lambda/bin"));
+    }
+
+    // Go: compiled with `go build`, runs the resulting binary
+    #[test]
+    fn test_go_script_generation() {
+        let runtime = GoRuntime;
+        let script = InitScriptGenerator::generate_script(&runtime, "/lambda/code.go");
+        assert!(script.contains("go build -o /lambda/bin /lambda/code.go"));
+        assert!(script.contains("COMPILE_EXIT=$?"));
+        assert!(script.contains("if [ $COMPILE_EXIT -ne 0 ]; then"));
+        assert!(script.contains("/lambda/bin"));
+    }
+
+    // Java: compile step renames the file, compiles with javac, packages a jar, runs with `java -jar`
+    #[test]
+    fn test_java_script_generation() {
+        let runtime = JavaRuntime;
+        let script = InitScriptGenerator::generate_script(&runtime, "/lambda/code.java");
+        assert!(script.contains("mv /lambda/code.java /lambda/Main.java"));
+        assert!(script.contains("javac -d /lambda /lambda/Main.java"));
+        assert!(script.contains("jar cfe /lambda/bin.jar Main"));
+        assert!(script.contains("COMPILE_EXIT=$?"));
+        assert!(script.contains("if [ $COMPILE_EXIT -ne 0 ]; then"));
+        assert!(script.contains("java -jar /lambda/bin.jar"));
     }
 }
