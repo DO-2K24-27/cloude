@@ -4,6 +4,10 @@ use anyhow::{Context, Result};
 use initramfs_builder::{Compression, InitramfsBuilder, RegistryAuth};
 use std::path::{Path, PathBuf};
 
+/// Builds an initramfs archive (.cpio.gz) from a container image for a given runtime.
+///
+/// Each build runs in its own UUID-named subdirectory under `work_dir`
+/// so concurrent builds don't collide.
 pub struct Builder {
     work_dir: PathBuf,
 }
@@ -15,6 +19,11 @@ impl Builder {
         }
     }
 
+    /// Pull the runtime's base container image, inject the user's source file
+    /// and a generated init script, then pack everything into a .cpio.gz archive.
+    ///
+    /// The output file is what the VMM boots as its initramfs — the kernel
+    /// extracts it and runs `/init` (our generated script) as PID 1.
     pub async fn build_image(
         &self,
         runtime: &dyn LanguageRuntime,

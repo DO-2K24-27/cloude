@@ -180,16 +180,13 @@ pub fn configure_kernel(
     Ok(kernel_load)
 }
 
-/// Load initramfs into guest memory.
+/// Load an initramfs image into guest memory at [`INITRAMFS_START`].
 ///
-/// # Arguments
+/// Reads the whole file into a host buffer, then walks the guest memory regions
+/// to find the one covering [`INITRAMFS_START`] and copies the data in.
+/// Returns `(guest_address, size)` to fill into the boot params.
 ///
-/// * `guest_memory` - Guest memory
-/// * `initramfs_path` - Path to the initramfs image
-///
-/// # Returns
-///
-/// Tuple of (address, size) where the initramfs was loaded
+/// Errors out if the image is too large to fit in the guest RAM.
 fn load_initramfs(
     guest_memory: &GuestMemoryMmap,
     initramfs_path: PathBuf,
