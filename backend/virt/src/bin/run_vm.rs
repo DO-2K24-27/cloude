@@ -102,7 +102,7 @@ async fn main() {
                 return eprintln!("Error: Guest IP and Host IP are not in the same subnet");
             }
 
-            let network = virt::network::network_addr(guest_ip, prefix);
+            let network = virt::network::network_addr(guest_ip, prefix).expect("network should be setup");
             virt::network::setup_nat(network, prefix).expect("Failed to set up NAT");
 
             virt::network::setup_guest_iface(&tap_name, "cloudebrtest")

@@ -30,10 +30,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2.7.8
 
       - name: Run cargo check
-        run: cd cli && cargo check --all-features
+        run: cargo check --all-features
 
       - name: Run Clippy
-        run: cd cli && cargo clippy --all-features -- -A warnings
+        run: cargo clippy --all-features -- -A warnings
     
   format:
     name: Format
@@ -68,4 +68,4 @@ jobs:
       - name: Run cargo test
         env:
           DATABASE_URL: postgres://cicd:cicd@localhost:5432/cicd
-        run: cd cli && cargo test --all-features
+        run: cargo test --all-features
