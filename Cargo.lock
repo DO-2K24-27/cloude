@@ -14,14 +14,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
- "initramfs-builder",
- "log",
- "regex",
  "serde",
  "tokio",
  "tracing",
  "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]
@@ -2435,6 +2431,7 @@ name = "virt"
 version = "0.1.0"
 dependencies = [
  "futures-util",
+ "initramfs-builder",
  "log",
  "nftables",
  "rtnetlink",

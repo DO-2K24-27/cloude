@@ -1,25 +1,33 @@
 use super::LanguageRuntime;
+use std::path::Path;
 
 pub struct JavaRuntime;
 
 impl LanguageRuntime for JavaRuntime {
-    fn base_image(&self) -> &'static str {
-        "openjdk:21-alpine"
-    }
-
-    fn run_command(&self) -> &'static str {
-        "java"
-    }
-
     fn source_extension(&self) -> &'static str {
         "java"
     }
 
-    fn compile_command(&self) -> Option<&'static str> {
-        Some("mv /lambda/code.java /lambda/Main.java && javac -d /lambda /lambda/Main.java && jar cfe /lambda/bin.jar Main -C /lambda .")
+    fn compile_step(&self, source_path: &Path, work_dir: &Path) -> Option<(String, Vec<String>)> {
+        Some((
+            "sh".to_string(),
+            vec![
+                "-c".to_string(),
+                r#"cp "$1" "$2/Main.java" && javac -d "$2" "$2/Main.java" && jar cfe "$2/bin.jar" Main -C "$2" ."#.to_string(),
+                "sh".to_string(),
+                source_path.display().to_string(),
+                work_dir.display().to_string(),
+            ],
+        ))
     }
 
-    fn execute_path(&self) -> Option<&'static str> {
-        Some("java -jar /lambda/bin.jar")
+    fn run_step(&self, _source_path: &Path, work_dir: &Path) -> (String, Vec<String>) {
+        (
+            "java".to_string(),
+            vec![
+                "-jar".to_string(),
+                work_dir.join("bin.jar").display().to_string(),
+            ],
+        )
     }
 }
