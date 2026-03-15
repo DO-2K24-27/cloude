@@ -48,12 +48,16 @@ impl InitramfsLanguage {
             // Skip rebuild if existing non-empty file is present, but still cleanup old versions.
             if let Ok(meta) = fs::metadata(&out_path) {
                 if meta.len() > 0 {
+                    if Self::should_rebuild(&out_path, agent_binary, init_script)? {
+                        let _ = fs::remove_file(&out_path);
+                    } else {
                     Self::cleanup_old_versions(
                         tmp_dir.as_str(),
                         &current_prefix,
                         &current_filename,
                     )?;
                     return Ok(());
+                    }
                 } else {
                     let _ = fs::remove_file(&out_path);
                 }
@@ -145,6 +149,22 @@ impl InitramfsLanguage {
             }
         }
         Ok(())
+    }
+
+    fn should_rebuild(out_path: &Path, agent_binary: &str, init_script: &str) -> Result<bool, Error> {
+        let out_mtime = fs::metadata(out_path)
+            .and_then(|m| m.modified())
+            .map_err(|e| Error::new(ErrorKind::Other, format!("failed to stat {}: {}", out_path.display(), e)))?;
+
+        let agent_mtime = fs::metadata(agent_binary)
+            .and_then(|m| m.modified())
+            .map_err(|e| Error::new(ErrorKind::Other, format!("failed to stat agent binary '{}': {}", agent_binary, e)))?;
+
+        let init_mtime = fs::metadata(init_script)
+            .and_then(|m| m.modified())
+            .map_err(|e| Error::new(ErrorKind::Other, format!("failed to stat init script '{}': {}", init_script, e)))?;
+
+        Ok(agent_mtime > out_mtime || init_mtime > out_mtime)
     }
 }
 

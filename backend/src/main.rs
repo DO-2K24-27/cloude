@@ -6,11 +6,14 @@ use axum::{
     routing::{get, post},
 };
 use backend::initramfs_manager::get_languages_config;
+use backend::ip_manager::IpManager;
+use backend::vm_lifecycle::{VmConfig, VmHandle};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
 use std::net::Ipv4Addr;
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 use tracing::{error, info};
@@ -21,9 +24,10 @@ use virt::network::{setup_bridge, setup_nat};
 
 struct AppState {
     jobs: RwLock<HashMap<String, Job>>,
-    agent_url: String,
     client: reqwest::Client,
     supported_languages: Vec<backend::initramfs_manager::InitramfsLanguage>,
+    vm_config: VmConfig,
+    ip_manager: Arc<Mutex<IpManager>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -95,7 +99,6 @@ async fn main() -> Result<(), std::io::Error> {
     // Get the server address from the environment variable or use a default
     let server_addr =
         env::var("BACKEND_SERVER_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
-    let agent_url = env::var("AGENT_URL").unwrap_or_else(|_| "http://127.0.0.1:3001".to_string());
     let bridge_name = env::var("BRIDGE_NAME").unwrap_or_else(|_| "cloudebr0".to_string());
 
     let languages_config_path =
@@ -147,6 +150,16 @@ async fn main() -> Result<(), std::io::Error> {
             )
         })?;
 
+    if ip_mask > 30 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "IP_MASK must be <= 30 to reserve gateway and guest addresses, got {}",
+                ip_mask
+            ),
+        ));
+    }
+
     // NOTE, DO NOT MERGE UNTIL REMOVAL OF THIS COMMENT:
     // I think using TWO WHOLE crates only to create the interface and tell it to do postrouting/ip forwarding may be a lot.
     // An alternative would be to use ioctl (?) or just run a command.
@@ -154,7 +167,7 @@ async fn main() -> Result<(), std::io::Error> {
 
     // Set up the bridge and NAT rules
     let host_ip: Ipv4Addr = (ip_range.to_bits() + 1).into();
-    if let Err(e) = setup_bridge(bridge_name, host_ip, ip_mask).await {
+    if let Err(e) = setup_bridge(bridge_name.clone(), host_ip, ip_mask).await {
         eprintln!("Failed to set up bridge: {}", e);
         return Err(std::io::Error::new(
             std::io::ErrorKind::Other,
@@ -176,11 +189,50 @@ async fn main() -> Result<(), std::io::Error> {
         .build()
         .expect("Failed to build HTTP client");
 
+    let vm_kernel_path =
+        env::var("VM_KERNEL_PATH").unwrap_or_else(|_| "./vmlinux".to_string());
+    let vm_initramfs_dir =
+        env::var("VM_INITRAMFS_DIR").unwrap_or_else(|_| "./tmp".to_string());
+    let vm_log_guest_console = env::var("VM_LOG_GUEST_CONSOLE")
+        .map(|v| {
+            let normalized = v.trim().to_ascii_lowercase();
+            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false);
+    tokio::fs::create_dir_all(&vm_initramfs_dir).await?;
+
+    let ip_allocations_path =
+        env::var("IP_ALLOCATIONS_PATH").unwrap_or_else(|_| "./tmp/ip_allocations.json".to_string());
+    if let Some(parent) = PathBuf::from(&ip_allocations_path).parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+
+    let host_bits = 32_u32 - u32::from(ip_mask);
+    let broadcast_offset = (1_u32 << host_bits) - 1;
+    let pool_start: Ipv4Addr = (u32::from(ip_range) + 2).into();
+    let pool_end: Ipv4Addr = (u32::from(ip_range) + broadcast_offset - 1).into();
+    let ip_manager = Arc::new(Mutex::new(
+        IpManager::new(&ip_allocations_path, pool_start, pool_end).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Failed to initialize IP manager: {}", e),
+            )
+        })?,
+    ));
+
     let state = Arc::new(AppState {
         jobs: RwLock::new(HashMap::new()),
-        agent_url,
         client,
         supported_languages: available_languages.clone(),
+        vm_config: VmConfig {
+            kernel_path: PathBuf::from(vm_kernel_path),
+            initramfs_dir: PathBuf::from(vm_initramfs_dir),
+            bridge_name: bridge_name.clone(),
+            vcpus: 1,
+            memory_mb: 512,
+            log_guest_console: vm_log_guest_console,
+        },
+        ip_manager,
     });
 
     // Background task: evict terminal jobs older than 5 mins to prevent unbounded memory growth.
@@ -241,6 +293,7 @@ async fn run_job(
         .collect::<Vec<_>>();
     supported_languages.sort();
     supported_languages.dedup();
+    let code = payload.code.trim().to_string();
 
     if !supported_languages.iter().any(|name| name == &language) {
         return (
@@ -276,10 +329,10 @@ async fn run_job(
 
     info!("Job {} created – language={}", id, language);
 
-    // Spawn a background task that forwards the request to the agent
+    // Spawn a background task that creates a VM and forwards the request to its agent
     let job_id = id.clone();
     let language = language.clone();
-    let code = payload.code.clone();
+    let code = code.clone();
     let state = Arc::clone(&state);
 
     tokio::spawn(async move {
@@ -291,52 +344,93 @@ async fn run_job(
             }
         }
 
-        let result = state
-            .client
-            .post(format!("{}/execute", state.agent_url.trim_end_matches('/')))
-            .json(&AgentExecuteRequest { language, code })
-            .send()
-            .await;
-
-        let mut jobs = state.jobs.write().await;
-        match result {
-            Ok(resp) if resp.status().is_success() => {
-                match resp.json::<AgentExecuteResponse>().await {
-                    Ok(agent_resp) => {
-                        if let Some(j) = jobs.get_mut(&job_id) {
-                            j.status = JobStatus::Done;
-                            j.exit_code = Some(agent_resp.exit_code);
-                            j.stdout = Some(agent_resp.stdout);
-                            j.stderr = Some(agent_resp.stderr);
-                        }
-                        info!("Job {} completed", job_id);
-                    }
-                    Err(e) => {
-                        if let Some(j) = jobs.get_mut(&job_id) {
-                            j.status = JobStatus::Error;
-                            j.stderr = Some(format!("Failed to parse agent response: {e}"));
-                        }
-                        error!("Job {} – agent response parse error: {e}", job_id);
-                    }
-                }
-            }
-            Ok(resp) => {
-                let status = resp.status();
-                let body = resp.text().await.unwrap_or_default();
+        let mut vm = match VmHandle::create(
+            job_id.clone(),
+            &language,
+            &state.vm_config,
+            Arc::clone(&state.ip_manager),
+        )
+        .await
+        {
+            Ok(vm) => vm,
+            Err(e) => {
+                let mut jobs = state.jobs.write().await;
                 if let Some(j) = jobs.get_mut(&job_id) {
                     j.status = JobStatus::Error;
-                    j.stderr = Some(format!("Agent returned HTTP {status}: {body}"));
+                    j.stderr = Some(format!("Failed to create VM: {e}"));
                 }
-                error!("Job {} – agent error HTTP {status}", job_id);
+                error!("Job {} – failed to create VM: {}", job_id, e);
+                return;
+            }
+        };
+
+        let execute_url = format!("{}/execute", vm.agent_url().trim_end_matches('/'));
+        let request_payload = AgentExecuteRequest { language, code };
+
+        let mut execution_result: Result<AgentExecuteResponse, String> =
+            Err("VM agent execute request did not run".to_string());
+
+        for attempt in 1..=5 {
+            let result = state
+                .client
+                .post(&execute_url)
+                .json(&request_payload)
+                .send()
+                .await;
+
+            match result {
+                Ok(resp) if resp.status().is_success() => {
+                    execution_result = resp
+                        .json::<AgentExecuteResponse>()
+                        .await
+                        .map_err(|e| format!("Failed to parse agent response: {e}"));
+                    break;
+                }
+                Ok(resp) => {
+                    let status = resp.status();
+                    let body = resp.text().await.unwrap_or_default();
+                    execution_result = Err(format!("Agent returned HTTP {status}: {body}"));
+                    break;
+                }
+                Err(e) => {
+                    if attempt == 5 {
+                        execution_result = Err(format!("Cannot reach VM agent: {e}"));
+                        break;
+                    }
+
+                    info!(
+                        "Job {} – execute call failed on attempt {}/5, retrying: {}",
+                        job_id, attempt, e
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                }
+            }
+        }
+
+        let mut jobs = state.jobs.write().await;
+        match execution_result {
+            Ok(agent_resp) => {
+                if let Some(j) = jobs.get_mut(&job_id) {
+                    j.status = JobStatus::Done;
+                    j.exit_code = Some(agent_resp.exit_code);
+                    j.stdout = Some(agent_resp.stdout);
+                    j.stderr = Some(agent_resp.stderr);
+                }
+                info!("Job {} completed", job_id);
             }
             Err(e) => {
                 if let Some(j) = jobs.get_mut(&job_id) {
                     j.status = JobStatus::Error;
-                    j.stderr = Some(format!("Cannot reach agent: {e}"));
+                    j.stderr = Some(e.clone());
                 }
-                error!("Job {} – cannot reach agent: {e}", job_id);
+                error!("Job {} – execution failed: {}", job_id, e);
             }
         }
+
+        // Teardown after job state is finalized so polling clients are never stuck in "running"
+        // if VM shutdown blocks longer than expected.
+        drop(jobs);
+        vm.destroy().await;
     });
 
     (StatusCode::ACCEPTED, Json(RunResponse { id })).into_response()

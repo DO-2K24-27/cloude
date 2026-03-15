@@ -1,7 +1,8 @@
 use crate::ip_manager::IpManager;
 use sha2::{Digest, Sha256};
 use std::net::Ipv4Addr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -14,6 +15,7 @@ pub struct VmHandle {
     pub tap_device: String,
     vm_thread: Option<thread::JoinHandle<()>>,
     vm_running: Arc<std::sync::atomic::AtomicBool>,
+    vmm_stop: Arc<std::sync::atomic::AtomicBool>,
     ip_manager: Arc<Mutex<IpManager>>,
 }
 
@@ -47,10 +49,11 @@ impl std::error::Error for VmError {}
 /// Configuration for launching a VM
 pub struct VmConfig {
     pub kernel_path: PathBuf,
-    pub work_dir: PathBuf,
+    pub initramfs_dir: PathBuf,
     pub bridge_name: String,
     pub vcpus: u8,
     pub memory_mb: usize,
+    pub log_guest_console: bool,
 }
 
 /// Generate a unique tap device name from VM ID using a hash
@@ -70,6 +73,7 @@ impl VmHandle {
     /// Creates and starts a new VM using VMM library
     pub async fn create(
         vm_id: String,
+        language: &str,
         config: &VmConfig,
         ip_manager: Arc<Mutex<IpManager>>,
     ) -> Result<Self, VmError> {
@@ -96,8 +100,7 @@ impl VmHandle {
         debug!(vm_id = %vm_id, tap = %tap_device, "Generated tap device name");
 
         // Step 3: Build initramfs with agent
-        let initramfs_path = match Self::build_initramfs_with_agent(&vm_id, &config, ip_addr).await
-        {
+        let initramfs_path = match Self::build_initramfs_with_agent(language, config).await {
             Ok(path) => path,
             Err(e) => {
                 let _ = Self::release_ip_internal(&vm_id, &ip_manager);
@@ -107,14 +110,27 @@ impl VmHandle {
 
         info!(vm_id = %vm_id, initramfs = %initramfs_path.display(), "Built initramfs");
 
+        if !config.kernel_path.exists() {
+            let _ = Self::release_ip_internal(&vm_id, &ip_manager);
+            return Err(VmError::VmmConfiguration(format!(
+                "Kernel not found at {} (set VM_KERNEL_PATH)",
+                config.kernel_path.display()
+            )));
+        }
+
         // Step 4: Spawn VMM in a dedicated thread
         let vm_running = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let vm_running_clone = Arc::clone(&vm_running);
+
+        let (startup_tx, startup_rx) = std::sync::mpsc::channel::<VmError>();
+        let (stop_handle_tx, stop_handle_rx) =
+            std::sync::mpsc::channel::<Arc<std::sync::atomic::AtomicBool>>();
 
         let kernel_path = config.kernel_path.clone();
         let tap_device_clone = tap_device.clone();
         let vcpus = config.vcpus;
         let memory_mb = config.memory_mb;
+        let log_guest_console = config.log_guest_console;
         let host_ip: Ipv4Addr = (u32::from(ip_addr) - 1).into();
         let netmask = Ipv4Addr::new(255, 255, 255, 0);
 
@@ -123,17 +139,25 @@ impl VmHandle {
             let stdin = Box::new(
                 std::fs::File::open("/dev/null").expect("Failed to open /dev/null for stdin"),
             );
-            let stdout = Box::new(std::io::sink());
+            let stdout: Box<dyn std::io::Write + Send> = if log_guest_console {
+                Box::new(std::io::stdout())
+            } else {
+                Box::new(std::io::sink())
+            };
             let memory_size = (memory_mb as usize) << 20; // Convert MB to bytes
 
             // Create VMM
             let mut vmm = match vmm::VMM::new(stdin, stdout, memory_size) {
                 Ok(v) => v,
                 Err(e) => {
+                    vm_running_clone.store(false, std::sync::atomic::Ordering::SeqCst);
+                    let _ = startup_tx.send(VmError::VmmCreation(format!("{:?}", e)));
                     error!("Failed to create VMM: {:?}", e);
                     return;
                 }
             };
+
+            let _ = stop_handle_tx.send(vmm.stop_handle());
 
             // Add network device (this creates the tap device)
             if let Err(e) = vmm.add_net_device(
@@ -143,6 +167,8 @@ impl VmHandle {
                 Some(netmask),
             ) {
                 error!("Failed to add network device: {:?}", e);
+                vm_running_clone.store(false, std::sync::atomic::Ordering::SeqCst);
+                let _ = startup_tx.send(VmError::NetworkSetup(format!("{:?}", e)));
                 return;
             }
 
@@ -156,6 +182,8 @@ impl VmHandle {
                 None,
             ) {
                 error!("Failed to configure VMM: {:?}", e);
+                vm_running_clone.store(false, std::sync::atomic::Ordering::SeqCst);
+                let _ = startup_tx.send(VmError::VmmConfiguration(format!("{:?}", e)));
                 return;
             }
 
@@ -173,8 +201,31 @@ impl VmHandle {
         let tap_path = format!("/sys/class/net/{}", tap_device);
         let max_wait = Duration::from_secs(10);
         let start = std::time::Instant::now();
+        let mut vmm_stop_handle: Option<Arc<std::sync::atomic::AtomicBool>> = None;
 
         loop {
+            if vmm_stop_handle.is_none() {
+                if let Ok(handle) = stop_handle_rx.try_recv() {
+                    vmm_stop_handle = Some(handle);
+                }
+            }
+
+            match startup_rx.try_recv() {
+                Ok(vm_err) => {
+                    let _ = Self::release_ip_internal(&vm_id, &ip_manager);
+                    return Err(vm_err);
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    if !vm_running.load(std::sync::atomic::Ordering::SeqCst) {
+                        let _ = Self::release_ip_internal(&vm_id, &ip_manager);
+                        return Err(VmError::VmmCreation(
+                            "VM thread exited during startup".to_string(),
+                        ));
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+
             if tokio::fs::metadata(&tap_path).await.is_ok() {
                 info!(vm_id = %vm_id, tap = %tap_device, "Tap device created");
                 break;
@@ -209,6 +260,7 @@ impl VmHandle {
             tap_device,
             vm_thread: Some(vm_thread),
             vm_running,
+            vmm_stop: vmm_stop_handle.unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicBool::new(false))),
             ip_manager,
         };
 
@@ -223,48 +275,84 @@ impl VmHandle {
     }
 
     /// Build initramfs with embedded agent binary
-    async fn build_initramfs_with_agent(
-        vm_id: &str,
-        config: &VmConfig,
-        _guest_ip: Ipv4Addr,
-    ) -> Result<PathBuf, VmError> {
-        debug!(vm_id = %vm_id, "Building initramfs with agent");
+    async fn build_initramfs_with_agent(language: &str, config: &VmConfig) -> Result<PathBuf, VmError> {
+        debug!(language = %language, "Resolving language initramfs");
 
-        let job_dir = config.work_dir.join(vm_id);
-        tokio::fs::create_dir_all(&job_dir)
-            .await
-            .map_err(|e| VmError::InitramfsBuild(format!("Failed to create job dir: {}", e)))?;
+        let prefix = format!("{}-", language);
+        let mut candidate: Option<PathBuf> = None;
 
-        // TODO: Create initramfs with agent binary embedded
-        let initramfs_path = job_dir.join("initramfs.cpio.gz");
+        let entries = std::fs::read_dir(&config.initramfs_dir).map_err(|e| {
+            VmError::InitramfsBuild(format!(
+                "Failed to read initramfs dir '{}': {}",
+                config.initramfs_dir.display(),
+                e
+            ))
+        })?;
 
-        // Create empty initramfs for now
-        if !initramfs_path.exists() {
-            tokio::fs::write(&initramfs_path, b"").await.map_err(|e| {
-                VmError::InitramfsBuild(format!("Failed to create placeholder: {}", e))
-            })?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+
+            let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
+
+            if name.starts_with(&prefix) && name.ends_with(".cpio.gz") {
+                let is_non_empty = std::fs::metadata(&path)
+                    .map(|m| m.len() > 0)
+                    .unwrap_or(false);
+                if is_non_empty {
+                    candidate = Some(path);
+                    break;
+                }
+            }
         }
 
-        warn!(vm_id = %vm_id, "Initramfs building not yet implemented - using empty file");
-
-        Ok(initramfs_path)
+        match candidate {
+            Some(path) => Ok(path),
+            None => {
+                warn!(
+                    language = %language,
+                    dir = %config.initramfs_dir.display(),
+                    "No valid initramfs found for language"
+                );
+                Err(VmError::InitramfsBuild(format!(
+                    "No initramfs found for language '{}'. Expected file like '{}<version>.cpio.gz' in {}",
+                    language,
+                    prefix,
+                    config.initramfs_dir.display()
+                )))
+            }
+        }
     }
 
     /// Wait for the agent inside the VM to be ready (health check)
     async fn wait_for_agent_ready(&self) -> Result<(), VmError> {
         info!(vm_id = %self.vm_id, ip = %self.ip, "Waiting for agent to be ready");
 
-        let agent_url = self.agent_url();
+        let agent_health_url = format!("{}/health", self.agent_url().trim_end_matches('/'));
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(2))
             .build()
             .map_err(|_e| VmError::AgentTimeout)?;
 
         // Try for up to 30 seconds
-        for attempt in 1..=15 {
+        for attempt in 1..=300 {
+            if !self.vm_running.load(Ordering::SeqCst) {
+                error!(
+                    vm_id = %self.vm_id,
+                    "VM exited before agent became ready (check guest console logs above)"
+                );
+                return Err(VmError::VmmConfiguration(
+                    "VM exited before agent became ready".to_string(),
+                ));
+            }
+
             debug!(vm_id = %self.vm_id, attempt = attempt, "Checking agent health");
 
-            match client.get(&agent_url).send().await {
+            match client.get(&agent_health_url).send().await {
                 Ok(resp) if resp.status().is_success() => {
                     info!(vm_id = %self.vm_id, "Agent is ready");
                     return Ok(());
@@ -277,7 +365,7 @@ impl VmHandle {
                 }
             }
 
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
 
         error!(vm_id = %self.vm_id, "Agent did not become ready in time");
@@ -294,6 +382,8 @@ impl VmHandle {
         info!(vm_id = %self.vm_id, "Destroying VM");
 
         // Signal VMM to stop
+        self.vmm_stop
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         self.vm_running
             .store(false, std::sync::atomic::Ordering::SeqCst);
 
@@ -337,6 +427,8 @@ impl VmHandle {
 impl Drop for VmHandle {
     fn drop(&mut self) {
         // Ensure VM is stopped when handle is dropped
+        self.vmm_stop
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         self.vm_running
             .store(false, std::sync::atomic::Ordering::SeqCst);
     }
