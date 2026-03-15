@@ -363,6 +363,11 @@ impl VMM {
         self.running.store(false, Ordering::SeqCst);
     }
 
+    /// Return a clone of the running flag so external code can stop the VM.
+    pub fn running_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.running)
+    }
+
     pub fn configure(
         &mut self,
         num_vcpus: u8,
