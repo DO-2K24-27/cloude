@@ -5,6 +5,7 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
+use backend::initramfs_manager::get_languages_config;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
@@ -95,6 +96,32 @@ async fn main() -> Result<(), std::io::Error> {
         env::var("BACKEND_SERVER_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
     let agent_url = env::var("AGENT_URL").unwrap_or_else(|_| "http://127.0.0.1:3001".to_string());
     let bridge_name = env::var("BRIDGE_NAME").unwrap_or_else(|_| "cloudebr0".to_string());
+
+    let languages_config_path =
+        env::var("LANGUAGES_CONFIG_PATH").unwrap_or_else(|_| "./config/languages.json".to_string());
+
+    let agent_binary =
+        env::var("AGENT_BINARY_PATH").unwrap_or_else(|_| "./cloude-agentd".to_string());
+
+    let init_script = env::var("INIT_SCRIPT_PATH").unwrap_or_else(|_| "./init.sh".to_string());
+
+    for available_language in get_languages_config(&languages_config_path)? {
+        log::debug!("Available language: {}", available_language.name);
+        log::debug!("  version: {}", available_language.version);
+        log::debug!("  base_image: {}", available_language.base_image);
+
+        let lang_name = available_language.name.clone();
+        available_language
+            .setup_initramfs(&agent_binary, &init_script)
+            .await
+            .map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Failed to setup initramfs for {}: {}", lang_name, e),
+                )
+            })?;
+    }
+
     // 39 is miku
     let ip_range: Ipv4Addr = env::var("IP_RANGE")
         .as_deref()

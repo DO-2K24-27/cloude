@@ -34,3 +34,4 @@ target
 /build/
 *.cpio.gz
 *.log
+*.env
