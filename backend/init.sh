@@ -8,7 +8,6 @@ mount -t devtmpfs devtmpfs /dev || true
 mount -t tmpfs tmpfs /run || true
 
 echo "[initramfs] booting..."
-echo "[initramfs] kernel cmdline: $(cat /proc/cmdline || true)"
 
 # If cloude-agentd was injected at /usr/bin/cloude-agentd:
 if [ -x /usr/bin/cloude-agentd ]; then
