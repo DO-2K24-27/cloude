@@ -13,15 +13,10 @@ impl LanguageRuntime for JavaRuntime {
             "sh".to_string(),
             vec![
                 "-c".to_string(),
-                format!(
-                    "cp {} {}/Main.java && javac -d {} {}/Main.java && jar cfe {}/bin.jar Main -C {} .",
-                    source_path.display(),
-                    work_dir.display(),
-                    work_dir.display(),
-                    work_dir.display(),
-                    work_dir.display(),
-                    work_dir.display()
-                ),
+                r#"cp "$1" "$2/Main.java" && javac -d "$2" "$2/Main.java" && jar cfe "$2/bin.jar" Main -C "$2" ."#.to_string(),
+                "sh".to_string(),
+                source_path.display().to_string(),
+                work_dir.display().to_string(),
             ],
         ))
     }

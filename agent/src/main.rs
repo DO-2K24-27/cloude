@@ -10,12 +10,16 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 use tokio::process::Command;
+use tokio::sync::mpsc;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::{Duration, timeout};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
+
+const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 
 struct AppState {
     job_counter: AtomicU64,
@@ -49,6 +53,11 @@ struct ExecutionResult {
     stderr: String,
 }
 
+struct PreparedJob {
+    job_dir: PathBuf,
+    source_path: PathBuf,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -59,8 +68,9 @@ async fn main() -> Result<()> {
 
     let server_addr =
         env::var("AGENT_SERVER_ADDR").unwrap_or_else(|_| "127.0.0.1:3001".to_string());
-    let work_dir =
-        PathBuf::from(env::var("AGENT_WORK_DIR").unwrap_or_else(|_| "build".to_string()));
+    let work_dir = resolve_work_dir(PathBuf::from(
+        env::var("AGENT_WORK_DIR").unwrap_or_else(|_| "build".to_string()),
+    ))?;
     let timeout_secs = env::var("AGENT_EXEC_TIMEOUT_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
@@ -102,56 +112,46 @@ async fn execute(
     let runtime = match runtime_from_language(&payload.language) {
         Some(runtime) => runtime,
         None => {
-            return (
+            return error_response(
                 StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!("Unsupported language: {}", payload.language),
-                }),
-            )
-                .into_response();
+                format!("Unsupported language: {}", payload.language),
+            );
         }
     };
 
-    let job_dir = state.work_dir.join(&job_id);
-
-    if let Err(e) = tokio::fs::create_dir_all(&job_dir).await {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Failed to create job dir: {}", e),
-            }),
-        )
-            .into_response();
-    }
-
-    let source_path = job_dir.join(format!("code.{}", runtime.source_extension()));
-    if let Err(e) = tokio::fs::write(&source_path, payload.code).await {
-        schedule_job_cleanup(job_dir.clone());
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Failed to write source code: {}", e),
-            }),
-        )
-            .into_response();
-    }
-
-    let result =
-        match execute_job(runtime.as_ref(), &source_path, &job_dir, state.exec_timeout).await {
-            Ok(result) => result,
-            Err(e) => {
-                schedule_job_cleanup(job_dir.clone());
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: e.to_string(),
-                    }),
-                )
-                    .into_response();
+    let prepared_job = match prepare_job(
+        &state.work_dir,
+        &job_id,
+        runtime.source_extension(),
+        payload.code,
+    )
+    .await
+    {
+        Ok(prepared_job) => prepared_job,
+        Err((job_dir, error)) => {
+            if let Some(job_dir) = job_dir {
+                schedule_job_cleanup(job_dir);
             }
-        };
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, error);
+        }
+    };
 
-    schedule_job_cleanup(job_dir);
+    let result = match execute_job(
+        runtime.as_ref(),
+        &prepared_job.source_path,
+        &prepared_job.job_dir,
+        state.exec_timeout,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(e) => {
+            schedule_job_cleanup(prepared_job.job_dir.clone());
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
+        }
+    };
+
+    schedule_job_cleanup(prepared_job.job_dir);
 
     (
         StatusCode::OK,
@@ -173,6 +173,10 @@ fn schedule_job_cleanup(job_dir: PathBuf) {
     });
 }
 
+fn error_response(status: StatusCode, error: String) -> axum::response::Response {
+    (status, Json(ErrorResponse { error })).into_response()
+}
+
 async fn acquire_run_permit(
     state: &Arc<AppState>,
     job_id: &str,
@@ -184,14 +188,39 @@ async fn acquire_run_permit(
             info!(job_id = %job_id, "Acquired run permit");
             Ok(permit)
         }
-        Err(e) => Err((
+        Err(e) => Err(error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Execution lock error: {}", e),
-            }),
-        )
-            .into_response()),
+            format!("Execution lock error: {}", e),
+        )),
     }
+}
+
+async fn prepare_job(
+    work_dir: &Path,
+    job_id: &str,
+    source_extension: &str,
+    code: String,
+) -> std::result::Result<PreparedJob, (Option<PathBuf>, String)> {
+    let job_dir = work_dir.join(job_id);
+
+    tokio::fs::create_dir_all(&job_dir)
+        .await
+        .map_err(|e| (None, format!("Failed to create job dir: {}", e)))?;
+
+    let source_path = job_dir.join(format!("code.{}", source_extension));
+    tokio::fs::write(&source_path, code)
+        .await
+        .map_err(|e| {
+            (
+                Some(job_dir.clone()),
+                format!("Failed to write source code: {}", e),
+            )
+        })?;
+
+    Ok(PreparedJob {
+        job_dir,
+        source_path,
+    })
 }
 
 async fn execute_job(
@@ -223,39 +252,143 @@ async fn run_process_candidates(
     let mut last_error = None;
 
     for (program, args) in commands {
-        let mut cmd = Command::new(program);
-        cmd.args(args)
-            .current_dir(work_dir)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-
-        match cmd.spawn() {
-            Ok(child) => {
-                let output = timeout(exec_timeout, child.wait_with_output())
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "Process timed out after {}s: {}",
-                            exec_timeout.as_secs(),
-                            program
-                        )
-                    })?
-                    .with_context(|| {
-                        format!("Process failed while waiting for output: {}", program)
-                    })?;
-
-                return Ok(ExecutionResult {
-                    exit_code: output.status.code().unwrap_or(1),
-                    stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-                    stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-                });
+        match run_process(program, args, work_dir, exec_timeout).await {
+            Ok(result) => return Ok(result),
+            Err(err) if err.downcast_ref::<std::io::Error>().is_some() => {
+                last_error = Some((program.clone(), err))
             }
-            Err(err) => last_error = Some((program.clone(), err)),
+            Err(err) => return Err(err),
         }
     }
 
     let (program, err) = last_error.context("No execution command candidate provided")?;
     Err(err).with_context(|| format!("Failed to spawn process: {}", program))
+}
+
+async fn run_process(
+    program: &str,
+    args: &[String],
+    work_dir: &Path,
+    exec_timeout: Duration,
+) -> Result<ExecutionResult> {
+    let mut cmd = Command::new(program);
+    cmd.args(args)
+        .current_dir(work_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("Failed to spawn process: {}", program))?;
+    let stdout = child.stdout.take().context("Child stdout was not piped")?;
+    let stderr = child.stderr.take().context("Child stderr was not piped")?;
+    let (tx, mut rx) = mpsc::channel(2);
+
+    let stdout_task = tokio::spawn(read_stream_limited(stdout, StreamKind::Stdout, tx.clone()));
+    let stderr_task = tokio::spawn(read_stream_limited(stderr, StreamKind::Stderr, tx));
+
+    let status = timeout(exec_timeout, async {
+        loop {
+            tokio::select! {
+                stream_result = rx.recv() => {
+                    match stream_result.context("Output reader channel closed unexpectedly")? {
+                        StreamResult::Exceeded(kind) => {
+                            child.kill().await.with_context(|| {
+                                format!("Failed to kill process after exceeding {} output limit: {}", kind.label(), program)
+                            })?;
+                        }
+                    }
+                }
+                status = child.wait() => {
+                    break status.with_context(|| {
+                        format!("Process failed while waiting for output: {}", program)
+                    });
+                }
+            }
+        }
+    })
+    .await
+    .with_context(|| {
+        format!(
+            "Process timed out after {}s: {}",
+            exec_timeout.as_secs(),
+            program
+        )
+    })??;
+
+    let stdout = stdout_task
+        .await
+        .context("Failed to join stdout reader task")?
+        .with_context(|| format!("Failed to read stdout for: {}", program))?;
+    let stderr = stderr_task
+        .await
+        .context("Failed to join stderr reader task")?
+        .with_context(|| format!("Failed to read stderr for: {}", program))?;
+
+    Ok(ExecutionResult {
+        exit_code: status.code().unwrap_or(1),
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+    })
+}
+
+fn resolve_work_dir(path: PathBuf) -> Result<PathBuf> {
+    if path.is_absolute() {
+        return Ok(path);
+    }
+
+    Ok(env::current_dir()?.join(path))
+}
+
+#[derive(Clone, Copy)]
+enum StreamKind {
+    Stdout,
+    Stderr,
+}
+
+impl StreamKind {
+    fn label(self) -> &'static str {
+        match self {
+            StreamKind::Stdout => "stdout",
+            StreamKind::Stderr => "stderr",
+        }
+    }
+}
+
+enum StreamResult {
+    Exceeded(StreamKind),
+}
+
+async fn read_stream_limited<R>(
+    mut reader: R,
+    kind: StreamKind,
+    tx: mpsc::Sender<StreamResult>,
+) -> Result<Vec<u8>>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut output = Vec::new();
+    let mut chunk = [0_u8; 8192];
+
+    loop {
+        let read = reader
+            .read(&mut chunk)
+            .await
+            .with_context(|| format!("Failed reading {}", kind.label()))?;
+
+        if read == 0 {
+            return Ok(output);
+        }
+
+        let remaining = MAX_OUTPUT_BYTES.saturating_sub(output.len());
+        let to_copy = remaining.min(read);
+        output.extend_from_slice(&chunk[..to_copy]);
+
+        if read > remaining {
+            let _ = tx.send(StreamResult::Exceeded(kind)).await;
+            return Ok(output);
+        }
+    }
 }
