@@ -8,7 +8,7 @@ use nftables::{
 };
 use rtnetlink::{Handle, LinkBridge, LinkUnspec, new_connection, packet_route::link::LinkMessage};
 use std::net::Ipv4Addr;
-use tracing::{debug};
+use tracing::debug;
 
 const NAT_TABLE: &str = "cloude_nat";
 const NAT_CHAIN: &str = "cloude_postr";
@@ -38,7 +38,7 @@ pub async fn setup_bridge(
             create_bridge(&handle, &bridge_name).await?
         }
     };
-    
+
     // gods please pardon me
     let bridge_ip: Ipv4Addr = ip_host.into();
 
@@ -301,7 +301,7 @@ pub async fn setup_guest_iface(
         .execute()
         .await?;
 
-        // Enable the guest iface
+    // Enable the guest iface
     debug!("Enabling guest interface: {}", guest_iface_name);
     handle
         .link()
