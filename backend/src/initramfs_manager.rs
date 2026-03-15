@@ -1,15 +1,24 @@
+use std::collections::HashMap;
 use std::fs;
 use std::future::Future;
 use std::io::{Error, ErrorKind};
 use std::path::{Path, PathBuf};
 
 use initramfs_builder::{Compression, InitramfsBuilder};
+use serde::Deserialize;
+use serde_json;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct InitramfsLanguage {
     pub name: String,       // e.g., "python", "rust", "node"
     pub version: String,    // compatibility/version info
     pub base_image: String, // docker image to use (e.g., "python:3.11-alpine")
+}
+
+#[derive(Debug, Deserialize)]
+struct LanguageConfig {
+    version: String,
+    base_image: String,
 }
 
 impl InitramfsLanguage {
@@ -130,4 +139,34 @@ impl InitramfsLanguage {
         }
         Ok(())
     }
+}
+
+pub fn get_languages_config(path: &str) -> Result<Vec<InitramfsLanguage>, Error> {
+    let content = fs::read_to_string(path).map_err(|e| match e.kind() {
+        ErrorKind::NotFound => Error::new(
+            ErrorKind::NotFound,
+            format!("languages config file not found at '{}'", path),
+        ),
+        _ => Error::new(
+            ErrorKind::Other,
+            format!("failed to read config '{}': {}", path, e),
+        ),
+    })?;
+
+    let map: HashMap<String, LanguageConfig> = serde_json::from_str(&content).map_err(|e| {
+        Error::new(
+            ErrorKind::InvalidData,
+            format!("invalid JSON in '{}': {}", path, e),
+        )
+    })?;
+
+    let languages = map
+        .into_iter()
+        .map(|(name, cfg)| InitramfsLanguage {
+            name,
+            version: cfg.version,
+            base_image: cfg.base_image,
+        })
+        .collect();
+    Ok(languages)
 }
