@@ -227,16 +227,64 @@ async fn health_check() -> &'static str {
 
 // ── POST /run  –  submit a new job ──────────────────────────────────
 
+/// Submits a code execution job and schedules its processing in the background.
+///
+/// Validates the requested language against the server's supported languages and, if valid,
+/// creates a job record and returns its id immediately. If the language is not supported,
+/// responds with a 400 Bad Request containing an error and the list of supported languages.
+/// On success the endpoint responds with 202 Accepted and a JSON body containing the job `id`.
+///
+/// # Examples
+///
+/// ```no_run
+/// use reqwest::blocking::Client;
+///
+/// let client = Client::new();
+/// let res = client
+///     .post("http://127.0.0.1:3000/run")
+///     .json(&serde_json::json!({"language": "python", "code": "print(\"hi\")"}))
+///     .send()
+///     .unwrap();
+///
+/// assert_eq!(res.status().as_u16(), 202);
+/// let body: serde_json::Value = res.json().unwrap();
+/// assert!(body.get("id").and_then(|v| v.as_str()).is_some());
+/// ```
 async fn run_job(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<RunRequest>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    let requested_language = payload.language.trim().to_ascii_lowercase();
+    let language = normalize_language_alias(&requested_language);
+
+    let mut supported_languages = state
+        .supported_languages
+        .iter()
+        .map(|lang| lang.name.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    supported_languages.sort();
+    supported_languages.dedup();
+
+    if !supported_languages.iter().any(|name| name == &language) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": format!(
+                    "Unsupported language: {}. Supported languages: {}",
+                    payload.language,
+                    supported_languages.join(", ")
+                )
+            })),
+        )
+            .into_response();
+    }
+
     let id = uuid::Uuid::new_v4().to_string();
 
     let job = Job {
         id: id.clone(),
         status: JobStatus::Pending,
-        language: payload.language.clone(),
+        language: language.clone(),
         exit_code: None,
         stdout: None,
         stderr: None,
@@ -249,11 +297,11 @@ async fn run_job(
         jobs.insert(id.clone(), job);
     }
 
-    info!("Job {} created – language={}", id, payload.language);
+    info!("Job {} created – language={}", id, language);
 
     // Spawn a background task that forwards the request to the agent
     let job_id = id.clone();
-    let language = payload.language.clone();
+    let language = language.clone();
     let code = payload.code.clone();
     let state = Arc::clone(&state);
 
@@ -314,7 +362,31 @@ async fn run_job(
         }
     });
 
-    (StatusCode::ACCEPTED, Json(RunResponse { id }))
+    (StatusCode::ACCEPTED, Json(RunResponse { id })).into_response()
+}
+
+/// Normalize common language aliases to their canonical names.
+///
+/// Returns the canonical language name for `input` (for example, `"py"` -> `"python"`, `"js"` -> `"node"`).
+/// If `input` is not a known alias, returns `input` unchanged.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(normalize_language_alias("py"), "python".to_string());
+/// assert_eq!(normalize_language_alias("javascript"), "node".to_string());
+/// assert_eq!(normalize_language_alias("rs"), "rust".to_string());
+/// assert_eq!(normalize_language_alias("go"), "go".to_string()); // not an alias, returns unchanged
+/// ```
+fn normalize_language_alias(input: &str) -> String {
+    match input {
+        "py" => "python".to_string(),
+        "js" | "javascript" => "node".to_string(),
+        "rs" => "rust".to_string(),
+        "golang" => "go".to_string(),
+        "c++" => "cpp".to_string(),
+        _ => input.to_string(),
+    }
 }
 
 // ── GET /status/:id  –  query job result ────────────────────────────
