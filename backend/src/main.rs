@@ -100,18 +100,26 @@ async fn main() -> Result<(), std::io::Error> {
     let languages_config_path =
         env::var("LANGUAGES_CONFIG_PATH").unwrap_or_else(|_| "./config/languages.json".to_string());
 
+    let agent_binary =
+        env::var("AGENT_BINARY_PATH").unwrap_or_else(|_| "./cloude-agentd".to_string());
+
+    let init_script = env::var("INIT_SCRIPT_PATH").unwrap_or_else(|_| "./init.sh".to_string());
+
     for available_language in get_languages_config(&languages_config_path)? {
         log::debug!("Available language: {}", available_language.name);
         log::debug!("  version: {}", available_language.version);
         log::debug!("  base_image: {}", available_language.base_image);
 
         let lang_name = available_language.name.clone();
-        available_language.setup_initramfs().await.map_err(|e| {
-            std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Failed to setup initramfs for {}: {}", lang_name, e),
-            )
-        })?;
+        available_language
+            .setup_initramfs(&agent_binary, &init_script)
+            .await
+            .map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Failed to setup initramfs for {}: {}", lang_name, e),
+                )
+            })?;
     }
 
     // 39 is miku

@@ -25,7 +25,11 @@ impl InitramfsLanguage {
     /// Build the initramfs generically from the struct fields.
     /// Produces an image named `{name}-{version}.cpio.gz` in backend/tmp.
     /// After a successful build, older versions with the same `name` are removed from tmp/.
-    pub fn setup_initramfs(self) -> impl Future<Output = Result<(), Error>> + Send {
+    pub fn setup_initramfs(
+        self,
+        agent_binary: &str,
+        init_script: &str,
+    ) -> impl Future<Output = Result<(), Error>> + Send {
         async move {
             let InitramfsLanguage {
                 name,
@@ -55,7 +59,8 @@ impl InitramfsLanguage {
                 }
             }
 
-            Self::build_initramfs(&base_image, out_file, &out_path).await?;
+            Self::build_initramfs(&base_image, out_file, &out_path, &agent_binary, init_script)
+                .await?;
 
             let metadata =
                 fs::metadata(&out_path).map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
@@ -100,13 +105,15 @@ impl InitramfsLanguage {
         base_image: &str,
         out_file: String,
         out_path: &Path,
+        agent_binary: &str,
+        init_script: &str,
     ) -> Result<(), Error> {
         let build_result = InitramfsBuilder::new()
             .image(base_image)
             .compression(Compression::Gzip)
             .exclude(&["/usr/share/doc/*", "/var/cache/*"])
-            .inject("./cloude-agentd", "/usr/bin/cloude-agentd")
-            .init_script("./init.sh")
+            .inject(agent_binary, "/usr/bin/cloude-agentd")
+            .init_script(init_script)
             .build(out_file)
             .await;
 
