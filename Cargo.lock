@@ -163,6 +163,7 @@ name = "backend"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "initramfs-builder",
  "log",
  "reqwest",
  "serde",
@@ -2431,7 +2432,6 @@ name = "virt"
 version = "0.1.0"
 dependencies = [
  "futures-util",
- "initramfs-builder",
  "log",
  "nftables",
  "rtnetlink",
