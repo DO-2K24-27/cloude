@@ -23,6 +23,7 @@ struct AppState {
     jobs: RwLock<HashMap<String, Job>>,
     agent_url: String,
     client: reqwest::Client,
+    supported_languages: Vec<backend::initramfs_manager::InitramfsLanguage>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -105,13 +106,16 @@ async fn main() -> Result<(), std::io::Error> {
 
     let init_script = env::var("INIT_SCRIPT_PATH").unwrap_or_else(|_| "./init.sh".to_string());
 
-    for available_language in get_languages_config(&languages_config_path)? {
-        log::debug!("Available language: {}", available_language.name);
-        log::debug!("  version: {}", available_language.version);
-        log::debug!("  base_image: {}", available_language.base_image);
+    let available_languages: Vec<backend::initramfs_manager::InitramfsLanguage> =
+        get_languages_config(&languages_config_path)?;
 
-        let lang_name = available_language.name.clone();
-        available_language
+    for language in available_languages.clone() {
+        log::debug!("Available language: {}", language.name);
+        log::debug!("  version: {}", language.version);
+        log::debug!("  base_image: {}", language.base_image);
+
+        let lang_name = language.name.clone();
+        language
             .setup_initramfs(&agent_binary, &init_script)
             .await
             .map_err(|e| {
@@ -176,6 +180,7 @@ async fn main() -> Result<(), std::io::Error> {
         jobs: RwLock::new(HashMap::new()),
         agent_url,
         client,
+        supported_languages: available_languages.clone(),
     });
 
     // Background task: evict terminal jobs older than 5 mins to prevent unbounded memory growth.
