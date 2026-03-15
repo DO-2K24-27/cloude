@@ -230,13 +230,38 @@ async fn health_check() -> &'static str {
 async fn run_job(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<RunRequest>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    let requested_language = payload.language.trim().to_ascii_lowercase();
+    let language = normalize_language_alias(&requested_language);
+
+    let mut supported_languages = state
+        .supported_languages
+        .iter()
+        .map(|lang| lang.name.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    supported_languages.sort();
+    supported_languages.dedup();
+
+    if !supported_languages.iter().any(|name| name == &language) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": format!(
+                    "Unsupported language: {}. Supported languages: {}",
+                    payload.language,
+                    supported_languages.join(", ")
+                )
+            })),
+        )
+            .into_response();
+    }
+
     let id = uuid::Uuid::new_v4().to_string();
 
     let job = Job {
         id: id.clone(),
         status: JobStatus::Pending,
-        language: payload.language.clone(),
+        language: language.clone(),
         exit_code: None,
         stdout: None,
         stderr: None,
@@ -249,11 +274,11 @@ async fn run_job(
         jobs.insert(id.clone(), job);
     }
 
-    info!("Job {} created – language={}", id, payload.language);
+    info!("Job {} created – language={}", id, language);
 
     // Spawn a background task that forwards the request to the agent
     let job_id = id.clone();
-    let language = payload.language.clone();
+    let language = language.clone();
     let code = payload.code.clone();
     let state = Arc::clone(&state);
 
@@ -314,7 +339,18 @@ async fn run_job(
         }
     });
 
-    (StatusCode::ACCEPTED, Json(RunResponse { id }))
+    (StatusCode::ACCEPTED, Json(RunResponse { id })).into_response()
+}
+
+fn normalize_language_alias(input: &str) -> String {
+    match input {
+        "py" => "python".to_string(),
+        "js" | "javascript" => "node".to_string(),
+        "rs" => "rust".to_string(),
+        "golang" => "go".to_string(),
+        "c++" => "cpp".to_string(),
+        _ => input.to_string(),
+    }
 }
 
 // ── GET /status/:id  –  query job result ────────────────────────────
