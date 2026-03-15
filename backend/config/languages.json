@@ -1,0 +1,14 @@
+{
+  "python": {
+    "version": "3.11",
+    "base_image": "python:3.11-alpine"
+  },
+  "node": {
+    "version": "20",
+    "base_image": "node:20-alpine"
+  },
+  "rust": {
+    "version": "1.81",
+    "base_image": "rust:1.81-alpine"
+  }
+}
