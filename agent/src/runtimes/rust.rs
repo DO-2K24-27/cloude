@@ -41,12 +41,10 @@ impl LanguageRuntime for RustRuntime {
                     .to_string(),
             );
             programs.push(
-                "/root/.rustup/toolchains/stable-x86_64-unknown-linux-musl/bin/rustc"
-                    .to_string(),
+                "/root/.rustup/toolchains/stable-x86_64-unknown-linux-musl/bin/rustc".to_string(),
             );
             programs.push(
-                "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc"
-                    .to_string(),
+                "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc".to_string(),
             );
         }
 

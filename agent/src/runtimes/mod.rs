@@ -20,7 +20,8 @@ pub trait LanguageRuntime: Send + Sync {
         source_path: &Path,
         work_dir: &Path,
     ) -> Option<Vec<(String, Vec<String>)>> {
-        self.compile_step(source_path, work_dir).map(|step| vec![step])
+        self.compile_step(source_path, work_dir)
+            .map(|step| vec![step])
     }
 
     fn run_step(&self, source_path: &Path, work_dir: &Path) -> (String, Vec<String>);
