@@ -254,7 +254,7 @@ impl VmHandle {
     async fn wait_for_agent_ready(&self) -> Result<(), VmError> {
         info!(vm_id = %self.vm_id, ip = %self.ip, "Waiting for agent to be ready");
 
-        let agent_url = format!("http://{}:3001/health", self.ip);
+        let agent_url = self.agent_url();
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(2))
             .build()
