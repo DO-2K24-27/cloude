@@ -200,9 +200,8 @@ async fn execute_job(
     work_dir: &Path,
     exec_timeout: Duration,
 ) -> Result<ExecutionResult> {
-    if let Some((program, args)) = runtime.compile_step(source_path, work_dir) {
-        let compile_result =
-            run_process_candidates(&[(program, args)], work_dir, exec_timeout).await?;
+    if let Some(commands) = runtime.compile_candidates(source_path, work_dir) {
+        let compile_result = run_process_candidates(&commands, work_dir, exec_timeout).await?;
         if compile_result.exit_code != 0 {
             return Ok(compile_result);
         }

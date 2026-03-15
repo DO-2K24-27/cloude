@@ -15,6 +15,14 @@ pub trait LanguageRuntime: Send + Sync {
         None
     }
 
+    fn compile_candidates(
+        &self,
+        source_path: &Path,
+        work_dir: &Path,
+    ) -> Option<Vec<(String, Vec<String>)>> {
+        self.compile_step(source_path, work_dir).map(|step| vec![step])
+    }
+
     fn run_step(&self, source_path: &Path, work_dir: &Path) -> (String, Vec<String>);
 
     fn run_candidates(&self, source_path: &Path, work_dir: &Path) -> Vec<(String, Vec<String>)> {
