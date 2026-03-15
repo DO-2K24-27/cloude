@@ -208,14 +208,12 @@ async fn prepare_job(
         .map_err(|e| (None, format!("Failed to create job dir: {}", e)))?;
 
     let source_path = job_dir.join(format!("code.{}", source_extension));
-    tokio::fs::write(&source_path, code)
-        .await
-        .map_err(|e| {
-            (
-                Some(job_dir.clone()),
-                format!("Failed to write source code: {}", e),
-            )
-        })?;
+    tokio::fs::write(&source_path, code).await.map_err(|e| {
+        (
+            Some(job_dir.clone()),
+            format!("Failed to write source code: {}", e),
+        )
+    })?;
 
     Ok(PreparedJob {
         job_dir,
