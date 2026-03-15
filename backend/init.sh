@@ -15,5 +15,9 @@ if [ -x /usr/bin/cloude-agentd ]; then
   exec /usr/bin/cloude-agentd
 else
   echo "[initramfs] ERROR: /usr/bin/cloude-agentd not found or not executable"
-  /bin/sh
+  if [ "${DEBUG_SHELL:-}" = "1" ]; then
+    echo "[initramfs] DEBUG_SHELL=1 -> dropping to shell"
+    exec /bin/sh
+  fi
+  exit 1
 fi
