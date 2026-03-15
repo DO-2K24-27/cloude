@@ -59,18 +59,6 @@ Expected body:
 Backend server is healthy!
 ```
 
-## Troubleshooting
-
-### Address already in use
-
-Another backend is already running.
-
-```bash
-sudo pkill -f '../target/debug/backend'
-```
-
-Then run the backend again.
-
 ### "unable to execute nft"
 
 Ensure `/usr/sbin` is in `PATH` in the `sudo env` command:
