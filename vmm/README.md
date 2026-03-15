@@ -171,3 +171,36 @@ Below are the most important functions implemented in the `cloude-vmm` and their
 - `src/devices/`: Virtual device implementations, including Virtio network.
 - `src/network.rs`: Networking setup for VMs, including TAP device configuration and Virtio network integration.
 - `src/cpu/`: vCPU setup and management.
+
+## What it provides
+
+- Load kernel + initramfs
+- Configure vCPUs and guest memory
+- Optional VirtIO net (tap-backed)
+- Event loop + serial handling
+- Graceful stop support from another thread
+
+## Main API
+
+- `VMM::new(input, output, memory_size)`
+- `add_net_device(tap, guest_ip, host_ip, netmask)`
+- `configure(vcpus, kernel_path, initramfs_path, init_path)`
+- `run()`
+- `stop()`
+- `stop_handle()`
+
+`stop_handle()` exposes the internal running flag used by `run()` and vCPU
+threads. Setting it to `false` requests a graceful shutdown.
+
+## Runtime behavior
+
+- vCPU threads run while internal `running == true`.
+- `run()` executes the event loop and joins vCPU threads at shutdown.
+- SIGUSR1 is used internally to interrupt threads blocked in `KVM_RUN` during
+	shutdown.
+
+## Debugging notes
+
+- Guest serial output destination is chosen by the caller.
+	- Backend can forward to host stdout (verbose)
+	- or to sink (quiet mode)

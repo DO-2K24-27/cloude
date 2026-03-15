@@ -37,10 +37,16 @@ sudo apt install nftables
 From repository root:
 
 ```bash
-cargo build -p backend -p agent
-cp ./target/debug/agent ./backend/cloude-agentd
+cargo build -p backend
+rustup target add x86_64-unknown-linux-musl
+cargo build -p agent --target x86_64-unknown-linux-musl
+cp ./target/x86_64-unknown-linux-musl/debug/agent ./backend/cloude-agentd
 chmod +x ./backend/cloude-agentd
 ```
+
+Why musl: language initramfs images are Alpine-based, so a glibc-linked agent
+(`./target/debug/agent`) fails at boot with `/usr/bin/cloude-agentd: not found`.
+The musl build is static and works in Alpine initramfs.
 
 ## Run backend
 
@@ -167,3 +173,14 @@ Below are the most important functions implemented in the `backend` and their ro
 - **Details**:
   - Removes jobs that have been completed or errored for more than 5 minutes.
   - Logs the number of jobs evicted during each cleanup cycle.
+### "/usr/bin/cloude-agentd: not found" inside VM
+
+This usually means the injected agent binary is glibc-linked and cannot run in
+Alpine initramfs. Rebuild and copy the musl binary:
+
+```bash
+rustup target add x86_64-unknown-linux-musl
+cargo build -p agent --target x86_64-unknown-linux-musl
+cp ./target/x86_64-unknown-linux-musl/debug/agent ./backend/cloude-agentd
+chmod +x ./backend/cloude-agentd
+```
