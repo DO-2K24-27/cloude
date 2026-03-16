@@ -4,10 +4,10 @@ Simple end-to-end startup for local development.
 
 ## 0) Prerequisites (one-time)
 
-```bash
-sudo apt update && sudo apt install -y nftables docker.io
-rustup target add x86_64-unknown-linux-musl
-```
+- Linux OS
+- Rust toolchain with Musl (rustup target add x86_64-unknown-linux-musl)
+- nftables (to setup network)
+- docker (for initramfs generation)
 
 You also need a VM kernel file at `backend/vmlinux`.
 
