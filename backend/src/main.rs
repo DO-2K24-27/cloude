@@ -161,11 +161,6 @@ async fn main() -> Result<(), std::io::Error> {
         ));
     }
 
-    // NOTE, DO NOT MERGE UNTIL REMOVAL OF THIS COMMENT:
-    // I think using TWO WHOLE crates only to create the interface and tell it to do postrouting/ip forwarding may be a lot.
-    // An alternative would be to use ioctl (?) or just run a command.
-    // Please give me feedback, this is making me go crazy.
-
     // Set up the bridge and NAT rules
     let host_ip: Ipv4Addr = (ip_range.to_bits() + 1).into();
     if let Err(e) = setup_bridge(bridge_name.clone(), host_ip, ip_mask).await {
