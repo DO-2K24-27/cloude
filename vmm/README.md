@@ -193,9 +193,3 @@ Below are the most important functions implemented in the `cloude-vmm` and their
 threads. Setting it to `false` requests a graceful shutdown.
 
 You can look at `backend/virt/src/bin/run_vm.rs` for an example
-
-## Debugging notes
-
-- Guest serial output destination is chosen by the caller.
-	- Backend can forward to host stdout (verbose)
-	- or to sink (quiet mode)
