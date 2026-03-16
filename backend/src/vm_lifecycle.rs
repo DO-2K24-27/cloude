@@ -14,7 +14,6 @@ pub struct VmHandle {
     pub ip: Ipv4Addr,
     pub tap_device: String,
     vm_thread: Option<thread::JoinHandle<()>>,
-    vm_running: Arc<std::sync::atomic::AtomicBool>,
     vmm_stop: Arc<std::sync::atomic::AtomicBool>,
     ip_manager: Arc<Mutex<IpManager>>,
 }
@@ -119,9 +118,6 @@ impl VmHandle {
         }
 
         // Step 4: Spawn VMM in a dedicated thread
-        let vm_running = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let vm_running_clone = Arc::clone(&vm_running);
-
         let (startup_tx, startup_rx) = std::sync::mpsc::channel::<VmError>();
         let (stop_handle_tx, stop_handle_rx) =
             std::sync::mpsc::channel::<Arc<std::sync::atomic::AtomicBool>>();
@@ -150,7 +146,6 @@ impl VmHandle {
             let mut vmm = match vmm::VMM::new(stdin, stdout, memory_size) {
                 Ok(v) => v,
                 Err(e) => {
-                    vm_running_clone.store(false, std::sync::atomic::Ordering::SeqCst);
                     let _ = startup_tx.send(VmError::VmmCreation(format!("{:?}", e)));
                     error!("Failed to create VMM: {:?}", e);
                     return;
@@ -167,7 +162,6 @@ impl VmHandle {
                 Some(netmask),
             ) {
                 error!("Failed to add network device: {:?}", e);
-                vm_running_clone.store(false, std::sync::atomic::Ordering::SeqCst);
                 let _ = startup_tx.send(VmError::NetworkSetup(format!("{:?}", e)));
                 return;
             }
@@ -182,7 +176,6 @@ impl VmHandle {
                 None,
             ) {
                 error!("Failed to configure VMM: {:?}", e);
-                vm_running_clone.store(false, std::sync::atomic::Ordering::SeqCst);
                 let _ = startup_tx.send(VmError::VmmConfiguration(format!("{:?}", e)));
                 return;
             }
@@ -193,7 +186,6 @@ impl VmHandle {
             vmm.run();
 
             info!("VMM stopped");
-            vm_running_clone.store(false, std::sync::atomic::Ordering::SeqCst);
         });
 
         // Step 5: Wait for tap device to be created
@@ -216,7 +208,7 @@ impl VmHandle {
                     return Err(vm_err);
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    if !vm_running.load(std::sync::atomic::Ordering::SeqCst) {
+                    if vm_thread.is_finished() {
                         let _ = Self::release_ip_internal(&vm_id, &ip_manager);
                         return Err(VmError::VmmCreation(
                             "VM thread exited during startup".to_string(),
@@ -231,7 +223,6 @@ impl VmHandle {
                     match stop_handle_rx.try_recv() {
                         Ok(handle) => vmm_stop_handle = Some(handle),
                         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                            vm_running.store(false, std::sync::atomic::Ordering::SeqCst);
                             let _ = Self::release_ip_internal(&vm_id, &ip_manager);
                             return Err(VmError::VmmCreation(
                                 "Missing VMM stop handle during startup".to_string(),
@@ -249,7 +240,6 @@ impl VmHandle {
 
             if start.elapsed() >= max_wait {
                 error!(vm_id = %vm_id, tap = %tap_device, "Tap device not created within timeout");
-                vm_running.store(false, std::sync::atomic::Ordering::SeqCst);
                 let _ = Self::release_ip_internal(&vm_id, &ip_manager);
                 return Err(VmError::NetworkSetup(format!(
                     "Tap device {} not created within {:?}",
@@ -263,7 +253,6 @@ impl VmHandle {
         // Step 6: Attach tap to bridge
         if let Err(e) = virt::network::setup_guest_iface(&tap_device, &config.bridge_name).await {
             error!(vm_id = %vm_id, "Failed to attach tap to bridge: {}", e);
-            vm_running.store(false, std::sync::atomic::Ordering::SeqCst);
             let _ = Self::release_ip_internal(&vm_id, &ip_manager);
             return Err(VmError::NetworkSetup(e.to_string()));
         }
@@ -271,7 +260,6 @@ impl VmHandle {
         info!(vm_id = %vm_id, "Network setup complete");
 
         let Some(vmm_stop) = vmm_stop_handle else {
-            vm_running.store(false, std::sync::atomic::Ordering::SeqCst);
             let _ = Self::release_ip_internal(&vm_id, &ip_manager);
             return Err(VmError::VmmCreation(
                 "Missing VMM stop handle after startup".to_string(),
@@ -283,7 +271,6 @@ impl VmHandle {
             ip: ip_addr,
             tap_device,
             vm_thread: Some(vm_thread),
-            vm_running,
             vmm_stop,
             ip_manager,
         };
@@ -382,7 +369,7 @@ impl VmHandle {
         let start = std::time::Instant::now();
         let mut attempt = 1_u32;
         while start.elapsed() < Duration::from_secs(30) {
-            if !self.vm_running.load(Ordering::SeqCst) {
+            if !self.vmm_stop.load(Ordering::SeqCst) {
                 error!(
                     vm_id = %self.vm_id,
                     "VM exited before agent became ready (check guest console logs above)"
@@ -427,8 +414,6 @@ impl VmHandle {
         // Signal VMM to stop
         self.vmm_stop
             .store(false, std::sync::atomic::Ordering::SeqCst);
-        self.vm_running
-            .store(false, std::sync::atomic::Ordering::SeqCst);
 
         // Wait for VMM thread to finish
         if let Some(thread) = self.vm_thread.take() {
@@ -471,8 +456,6 @@ impl Drop for VmHandle {
     fn drop(&mut self) {
         // Ensure VM is stopped when handle is dropped
         self.vmm_stop
-            .store(false, std::sync::atomic::Ordering::SeqCst);
-        self.vm_running
             .store(false, std::sync::atomic::Ordering::SeqCst);
     }
 }
