@@ -192,6 +192,8 @@ Below are the most important functions implemented in the `cloude-vmm` and their
 `stop_handle()` exposes the internal running flag used by `run()` and vCPU
 threads. Setting it to `false` requests a graceful shutdown.
 
+You can look at `backend/virt/src/bin/run_vm.rs` for an example
+
 ## Runtime behavior
 
 - vCPU threads run while internal `running == true`.
