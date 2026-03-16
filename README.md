@@ -13,6 +13,7 @@ Serverless Rust program to run code from clients in micro-vm
     - [Agent](#agent)
     - [CLI](#cli)
   - [Components lifetime](#components-lifetime)
+  - [Sequence Diagram](#sequence-diagram)
   - [License](#license)
 
 ## Architecture
@@ -131,6 +132,14 @@ A micro-VM is spawned for every request as in serverless architecture.
 That way the agent only exists for the time of execution while the backend is constantly listening for execution requests.
 
 The CLI is only used when the user needs it.
+
+## Sequence Diagram
+
+Below is the sequence diagram illustrating the end-to-end flow of a request in the Cloude system:
+
+![alt text](image.png)
+
+This diagram provides a high-level overview of how a job request flows through the system, from submission to execution and result retrieval.
 
 ## License
 
