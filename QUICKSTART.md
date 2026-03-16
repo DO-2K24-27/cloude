@@ -16,26 +16,24 @@ You also need a VM kernel file at `backend/vmlinux`.
 From repository root:
 
 ```bash
-cargo build -p backend -p cli && \
-cargo build -p agent --target x86_64-unknown-linux-musl && \
-cp ./target/x86_64-unknown-linux-musl/debug/agent ./backend/cloude-agentd && \
-chmod +x ./backend/cloude-agentd
+cargo build -p backend -p cli
+cargo build -p agent --target x86_64-unknown-linux-musl
+cp ./target/x86_64-unknown-linux-musl/debug/agent ./backend/cloude-agentd
 ```
 
 ## 2) Start backend (one command, terminal A)
 
-From repository root:
+Run backend as root from its project folder:
 
 ```bash
-cd backend && \
-  PATH="/usr/sbin:$PATH" \
-  LANGUAGES_CONFIG_PATH=./config/languages.json \
-  AGENT_BINARY_PATH=./cloude-agentd \
-  INIT_SCRIPT_PATH=./init.sh \
-  VM_KERNEL_PATH=./vmlinux \
-  VM_INITRAMFS_DIR=./tmp \
-  VM_LOG_GUEST_CONSOLE=false \
-  ../target/debug/backend
+cd backend
+sudo LANGUAGES_CONFIG_PATH=./config/languages.json \
+AGENT_BINARY_PATH=./cloude-agentd \
+INIT_SCRIPT_PATH=./init.sh \
+VM_KERNEL_PATH=./vmlinux \
+VM_INITRAMFS_DIR=./tmp \
+VM_LOG_GUEST_CONSOLE=false \
+../target/debug/backend
 ```
 
 Tip: set `VM_LOG_GUEST_CONSOLE=true` only when debugging VM boot/agent startup.
