@@ -207,10 +207,51 @@ async fn main() -> Result<(), std::io::Error> {
         tokio::fs::create_dir_all(parent).await?;
     }
 
-    let host_bits = 32_u32 - u32::from(ip_mask);
-    let broadcast_offset = (1_u32 << host_bits) - 1;
-    let pool_start: Ipv4Addr = (u32::from(ip_range) + 2).into();
-    let pool_end: Ipv4Addr = (u32::from(ip_range) + broadcast_offset - 1).into();
+    let host_bits = 32_u32.checked_sub(u32::from(ip_mask)).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("Failed to compute host bits from IP_MASK={}", ip_mask),
+        )
+    })?;
+    let host_space = 1_u32.checked_shl(host_bits).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("Failed to compute host address space from IP_MASK={}", ip_mask),
+        )
+    })?;
+    let broadcast_offset = host_space.checked_sub(1).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("Failed to compute broadcast offset from IP_MASK={}", ip_mask),
+        )
+    })?;
+    let ip_range_u32 = u32::from(ip_range);
+    let pool_start_u32 = ip_range_u32.checked_add(2).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("IP_RANGE {} overflows when computing pool start", ip_range),
+        )
+    })?;
+    let pool_end_u32 = ip_range_u32
+        .checked_add(broadcast_offset)
+        .and_then(|v| v.checked_sub(1))
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("IP_RANGE {} overflows when computing pool end", ip_range),
+            )
+        })?;
+    if pool_start_u32 > pool_end_u32 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "Invalid pool bounds for IP_RANGE={} and IP_MASK={}",
+                ip_range, ip_mask
+            ),
+        ));
+    }
+    let pool_start: Ipv4Addr = pool_start_u32.into();
+    let pool_end: Ipv4Addr = pool_end_u32.into();
     let ip_manager = Arc::new(Mutex::new(
         IpManager::new(&ip_allocations_path, pool_start, pool_end).map_err(|e| {
             std::io::Error::new(

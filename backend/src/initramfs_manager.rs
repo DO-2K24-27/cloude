@@ -138,6 +138,7 @@ impl InitramfsLanguage {
         current_prefix: &str,
         current_filename: &str,
     ) -> Result<(), Error> {
+        let current_metadata_filename = format!("{}.meta", current_filename);
         if let Ok(entries) = fs::read_dir(tmp_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
@@ -145,7 +146,10 @@ impl InitramfsLanguage {
                     continue;
                 }
                 if let Some(fname) = path.file_name().and_then(|s| s.to_str()) {
-                    if fname.starts_with(current_prefix) && fname != current_filename {
+                    if fname.starts_with(current_prefix)
+                        && fname != current_filename
+                        && fname != current_metadata_filename
+                    {
                         fs::remove_file(&path)
                             .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
                     }

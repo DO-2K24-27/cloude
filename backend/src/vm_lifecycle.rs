@@ -227,6 +227,22 @@ impl VmHandle {
             }
 
             if tokio::fs::metadata(&tap_path).await.is_ok() {
+                if vmm_stop_handle.is_none() {
+                    match stop_handle_rx.try_recv() {
+                        Ok(handle) => vmm_stop_handle = Some(handle),
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            vm_running.store(false, std::sync::atomic::Ordering::SeqCst);
+                            let _ = Self::release_ip_internal(&vm_id, &ip_manager);
+                            return Err(VmError::VmmCreation(
+                                "Missing VMM stop handle during startup".to_string(),
+                            ));
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty) => {
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                            continue;
+                        }
+                    }
+                }
                 info!(vm_id = %vm_id, tap = %tap_device, "Tap device created");
                 break;
             }
@@ -254,11 +270,12 @@ impl VmHandle {
 
         info!(vm_id = %vm_id, "Network setup complete");
 
-        let vmm_stop = if let Some(handle) = vmm_stop_handle {
-            handle
-        } else {
-            warn!(vm_id = %vm_id, "Missing VMM stop handle; using disconnected fallback sentinel");
-            Arc::new(std::sync::atomic::AtomicBool::new(false))
+        let Some(vmm_stop) = vmm_stop_handle else {
+            vm_running.store(false, std::sync::atomic::Ordering::SeqCst);
+            let _ = Self::release_ip_internal(&vm_id, &ip_manager);
+            return Err(VmError::VmmCreation(
+                "Missing VMM stop handle after startup".to_string(),
+            ));
         };
 
         let mut handle = VmHandle {
@@ -286,7 +303,7 @@ impl VmHandle {
         debug!(language = %language, "Resolving language initramfs");
 
         let prefix = format!("{}-", language);
-        let mut candidate: Option<PathBuf> = None;
+        let mut candidates: Vec<PathBuf> = Vec::new();
 
         let mut entries = tokio::fs::read_dir(&config.initramfs_dir).await.map_err(|e| {
             VmError::InitramfsBuild(format!(
@@ -322,13 +339,18 @@ impl VmHandle {
                     .map(|m| m.len() > 0)
                     .unwrap_or(false);
                 if is_non_empty {
-                    candidate = Some(path);
-                    break;
+                    candidates.push(path);
                 }
             }
         }
 
-        match candidate {
+        candidates.sort_by(|a, b| {
+            a.file_name()
+                .and_then(|s| s.to_str())
+                .cmp(&b.file_name().and_then(|s| s.to_str()))
+        });
+
+        match candidates.into_iter().next_back() {
             Some(path) => Ok(path),
             None => {
                 warn!(
