@@ -238,19 +238,24 @@ impl VmHandle {
     }
 
     /// Build initramfs with embedded agent binary
-    async fn build_initramfs_with_agent(language: &str, config: &VmConfig) -> Result<PathBuf, VmError> {
+    async fn build_initramfs_with_agent(
+        language: &str,
+        config: &VmConfig,
+    ) -> Result<PathBuf, VmError> {
         debug!(language = %language, "Resolving language initramfs");
 
         let prefix = format!("{}-", language);
         let mut candidates: Vec<PathBuf> = Vec::new();
 
-        let mut entries = tokio::fs::read_dir(&config.initramfs_dir).await.map_err(|e| {
-            VmError::InitramfsBuild(format!(
-                "Failed to read initramfs dir '{}': {}",
-                config.initramfs_dir.display(),
-                e
-            ))
-        })?;
+        let mut entries = tokio::fs::read_dir(&config.initramfs_dir)
+            .await
+            .map_err(|e| {
+                VmError::InitramfsBuild(format!(
+                    "Failed to read initramfs dir '{}': {}",
+                    config.initramfs_dir.display(),
+                    e
+                ))
+            })?;
 
         while let Some(entry) = entries.next_entry().await.map_err(|e| {
             VmError::InitramfsBuild(format!(

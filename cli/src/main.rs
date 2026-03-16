@@ -128,12 +128,9 @@ async fn cmd_go(
 
         if !status_resp.status().is_success() {
             let status = status_resp.status();
-            let err: ErrorBody = status_resp
-                .json()
-                .await
-                .unwrap_or(ErrorBody {
-                    error: format!("HTTP {status}"),
-                });
+            let err: ErrorBody = status_resp.json().await.unwrap_or(ErrorBody {
+                error: format!("HTTP {status}"),
+            });
             return Err(format!("Backend error (HTTP {status}): {}", err.error).into());
         }
 

@@ -167,15 +167,30 @@ impl InitramfsLanguage {
     ) -> Result<bool, Error> {
         let out_mtime = fs::metadata(out_path)
             .and_then(|m| m.modified())
-            .map_err(|e| Error::new(ErrorKind::Other, format!("failed to stat {}: {}", out_path.display(), e)))?;
+            .map_err(|e| {
+                Error::new(
+                    ErrorKind::Other,
+                    format!("failed to stat {}: {}", out_path.display(), e),
+                )
+            })?;
 
         let agent_mtime = fs::metadata(agent_binary)
             .and_then(|m| m.modified())
-            .map_err(|e| Error::new(ErrorKind::Other, format!("failed to stat agent binary '{}': {}", agent_binary, e)))?;
+            .map_err(|e| {
+                Error::new(
+                    ErrorKind::Other,
+                    format!("failed to stat agent binary '{}': {}", agent_binary, e),
+                )
+            })?;
 
         let init_mtime = fs::metadata(init_script)
             .and_then(|m| m.modified())
-            .map_err(|e| Error::new(ErrorKind::Other, format!("failed to stat init script '{}': {}", init_script, e)))?;
+            .map_err(|e| {
+                Error::new(
+                    ErrorKind::Other,
+                    format!("failed to stat init script '{}': {}", init_script, e),
+                )
+            })?;
 
         let image_mismatch = match Self::read_build_metadata(out_path) {
             Ok(Some(previous_base_image)) => previous_base_image != base_image,
@@ -183,7 +198,11 @@ impl InitramfsLanguage {
             Err(e) => {
                 return Err(Error::new(
                     ErrorKind::Other,
-                    format!("failed to read build metadata for {}: {}", out_path.display(), e),
+                    format!(
+                        "failed to read build metadata for {}: {}",
+                        out_path.display(),
+                        e
+                    ),
                 ));
             }
         };
