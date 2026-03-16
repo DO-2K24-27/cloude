@@ -14,6 +14,7 @@ Serverless Rust program to run code from clients in micro-vm
     - [CLI](#cli)
   - [Components lifetime](#components-lifetime)
   - [Sequence Diagram](#sequence-diagram)
+  - [How to start ?](#how-to-start-)
   - [License](#license)
 
 ## Architecture
@@ -140,6 +141,10 @@ Below is the sequence diagram illustrating the end-to-end flow of a request in t
 ![alt text](docs/assets/image.png)
 
 This diagram provides a high-level overview of how a job request flows through the system, from submission to execution and result retrieval.
+
+## How to start ?
+
+To use this project locally, you can follow the quickstart guide in [QUICKSTART.md](QUICKSTART.md) for a simple end-to-end startup for local development.
 
 ## License
 
