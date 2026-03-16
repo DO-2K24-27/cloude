@@ -78,7 +78,7 @@ impl VmHandle {
     ) -> Result<Self, VmError> {
         info!(vm_id = %vm_id, "Creating new VM");
 
-        // Step 1: Allocate IP from pool
+        // Allocate IP from pool
         let ip = {
             let manager = ip_manager
                 .lock()
@@ -94,11 +94,11 @@ impl VmHandle {
 
         info!(vm_id = %vm_id, ip = %ip_addr, "Allocated IP for VM");
 
-        // Step 2: Generate unique tap device name
+        // Generate unique tap device name
         let tap_device = generate_tap_device_name(&vm_id);
         debug!(vm_id = %vm_id, tap = %tap_device, "Generated tap device name");
 
-        // Step 3: Build initramfs with agent
+        // Build initramfs with agent
         let initramfs_path = match Self::build_initramfs_with_agent(language, config).await {
             Ok(path) => path,
             Err(e) => {
@@ -117,7 +117,7 @@ impl VmHandle {
             )));
         }
 
-        // Step 4: Spawn VMM in a dedicated thread
+        // Spawn VMM in a dedicated thread
         let (vm_setup_tx, vm_setup_rx) =
             std::sync::mpsc::channel::<Result<Arc<std::sync::atomic::AtomicBool>, VmError>>();
 
@@ -188,7 +188,7 @@ impl VmHandle {
             info!("VMM stopped");
         });
 
-        // Step 5: Wait for tap device to be created
+        // Wait for tap device to be created
         let vmm_stop = match vm_setup_rx.recv() {
             Ok(Err(vm_err)) => {
                 let _ = Self::release_ip_internal(&vm_id, &ip_manager);
@@ -209,7 +209,7 @@ impl VmHandle {
             }
         };
 
-        // Step 6: Attach tap to bridge
+        // Attach tap to bridge
         if let Err(e) = virt::network::setup_guest_iface(&tap_device, &config.bridge_name).await {
             error!(vm_id = %vm_id, "Failed to attach tap to bridge: {}", e);
             let _ = Self::release_ip_internal(&vm_id, &ip_manager);
@@ -227,7 +227,7 @@ impl VmHandle {
             ip_manager,
         };
 
-        // Step 7: Wait for agent to be ready
+        // Wait for agent to be ready
         if let Err(e) = handle.wait_for_agent_ready().await {
             handle.destroy().await;
             return Err(e);

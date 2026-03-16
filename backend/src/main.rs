@@ -131,7 +131,6 @@ async fn main() -> Result<(), std::io::Error> {
             })?;
     }
 
-    // 39 is miku
     let ip_range: Ipv4Addr = env::var("IP_RANGE")
         .as_deref()
         .unwrap_or_else(|_| "10.39.1.0")
