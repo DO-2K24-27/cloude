@@ -67,7 +67,7 @@ async fn main() -> Result<()> {
         .init();
 
     let server_addr =
-        env::var("AGENT_SERVER_ADDR").unwrap_or_else(|_| "127.0.0.1:3001".to_string());
+        env::var("AGENT_SERVER_ADDR").unwrap_or_else(|_| "0.0.0.0:3001".to_string());
     let work_dir = resolve_work_dir(PathBuf::from(
         env::var("AGENT_WORK_DIR").unwrap_or_else(|_| "build".to_string()),
     ))?;
@@ -286,16 +286,22 @@ async fn run_process(
 
     let stdout_task = tokio::spawn(read_stream_limited(stdout, StreamKind::Stdout, tx.clone()));
     let stderr_task = tokio::spawn(read_stream_limited(stderr, StreamKind::Stderr, tx));
+    let mut recv_closed = false;
 
     let status = timeout(exec_timeout, async {
         loop {
             tokio::select! {
-                stream_result = rx.recv() => {
-                    match stream_result.context("Output reader channel closed unexpectedly")? {
-                        StreamResult::Exceeded(kind) => {
+                stream_result = rx.recv(), if !recv_closed => {
+                    match stream_result {
+                        Some(StreamResult::Exceeded(kind)) => {
                             child.kill().await.with_context(|| {
                                 format!("Failed to kill process after exceeding {} output limit: {}", kind.label(), program)
                             })?;
+                        }
+                        // Reader tasks finished (EOF): this is expected for short-lived commands.
+                        // Stop polling the channel to avoid busy-looping on repeated `None`.
+                        None => {
+                            recv_closed = true;
                         }
                     }
                 }

@@ -363,6 +363,12 @@ impl VMM {
         self.running.store(false, Ordering::SeqCst);
     }
 
+    /// Return a handle to the internal running flag used by `run()`/vCPU loops.
+    /// Setting this flag to `false` from another thread requests a graceful stop.
+    pub fn stop_handle(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.running)
+    }
+
     pub fn configure(
         &mut self,
         num_vcpus: u8,

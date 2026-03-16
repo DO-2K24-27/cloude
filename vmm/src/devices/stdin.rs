@@ -52,8 +52,9 @@ impl MutEventSubscriber for StdinHandler {
                         }
                     }
                     Ok(0) => {
-                        ops.remove(Events::empty(&FdWrapper(self.input.as_raw_fd())))
-                            .expect("Failed to remove stdin event on EOF");
+                        if let Err(e) = ops.remove(Events::empty(&FdWrapper(self.input.as_raw_fd()))) {
+                            eprintln!("Failed to remove stdin event on EOF: {:?}", e);
+                        }
                     }
                     Err(e) => {
                         eprintln!("Failed to read stdin: {:?}", e);
@@ -70,7 +71,10 @@ impl MutEventSubscriber for StdinHandler {
 
         let wrapper = FdWrapper(raw_fd);
 
-        ops.add(Events::with_data(&wrapper, STDIN_DATA, EventSet::IN))
-            .expect("Unable to add stdin event");
+        if let Err(e) = ops.add(Events::with_data(&wrapper, STDIN_DATA, EventSet::IN)) {
+            // This can legitimately fail with EPERM for non-epollable fds (e.g. /dev/null).
+            // Stdin forwarding is optional for backend-driven jobs, so keep running.
+            eprintln!("Unable to add stdin event, disabling stdin forwarding: {:?}", e);
+        }
     }
 }
