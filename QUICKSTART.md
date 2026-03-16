@@ -27,7 +27,7 @@ chmod +x ./backend/cloude-agentd
 From repository root:
 
 ```bash
-cd backend && sudo env \
+cd backend && \
   PATH="/usr/sbin:$PATH" \
   LANGUAGES_CONFIG_PATH=./config/languages.json \
   AGENT_BINARY_PATH=./cloude-agentd \
