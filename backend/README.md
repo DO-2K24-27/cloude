@@ -205,6 +205,7 @@ Rebuild and copy the musl binary:
 
 ```bash
 rustup target add x86_64-unknown-linux-musl
+cargo build -p backend
 cargo build -p agent --target x86_64-unknown-linux-musl
 cp ./target/x86_64-unknown-linux-musl/debug/agent ./backend/cloude-agentd
 chmod +x ./backend/cloude-agentd
