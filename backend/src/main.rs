@@ -108,6 +108,8 @@ async fn main() -> Result<(), std::io::Error> {
         env::var("AGENT_BINARY_PATH").unwrap_or_else(|_| "./cloude-agentd".to_string());
 
     let init_script = env::var("INIT_SCRIPT_PATH").unwrap_or_else(|_| "./init.sh".to_string());
+    let vm_initramfs_dir =
+        env::var("VM_INITRAMFS_DIR").unwrap_or_else(|_| "./tmp".to_string());
 
     let available_languages: Vec<backend::initramfs_manager::InitramfsLanguage> =
         get_languages_config(&languages_config_path)?;
@@ -119,7 +121,7 @@ async fn main() -> Result<(), std::io::Error> {
 
         let lang_name = language.name.clone();
         language
-            .setup_initramfs(&agent_binary, &init_script)
+            .setup_initramfs(&agent_binary, &init_script, &vm_initramfs_dir)
             .await
             .map_err(|e| {
                 std::io::Error::new(
@@ -150,11 +152,11 @@ async fn main() -> Result<(), std::io::Error> {
             )
         })?;
 
-    if ip_mask > 30 {
+    if !(1..=30).contains(&ip_mask) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!(
-                "IP_MASK must be <= 30 to reserve gateway and guest addresses, got {}",
+                "IP_MASK must be in range 1..=30 to reserve gateway and guest addresses, got {}",
                 ip_mask
             ),
         ));
@@ -191,8 +193,6 @@ async fn main() -> Result<(), std::io::Error> {
 
     let vm_kernel_path =
         env::var("VM_KERNEL_PATH").unwrap_or_else(|_| "./vmlinux".to_string());
-    let vm_initramfs_dir =
-        env::var("VM_INITRAMFS_DIR").unwrap_or_else(|_| "./tmp".to_string());
     let vm_log_guest_console = env::var("VM_LOG_GUEST_CONSOLE")
         .map(|v| {
             let normalized = v.trim().to_ascii_lowercase();
@@ -293,7 +293,17 @@ async fn run_job(
         .collect::<Vec<_>>();
     supported_languages.sort();
     supported_languages.dedup();
-    let code = payload.code.trim().to_string();
+    if payload.code.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "Code cannot be empty"
+            })),
+        )
+            .into_response();
+    }
+
+    let code = payload.code.clone();
 
     if !supported_languages.iter().any(|name| name == &language) {
         return (

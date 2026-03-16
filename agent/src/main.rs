@@ -286,11 +286,12 @@ async fn run_process(
 
     let stdout_task = tokio::spawn(read_stream_limited(stdout, StreamKind::Stdout, tx.clone()));
     let stderr_task = tokio::spawn(read_stream_limited(stderr, StreamKind::Stderr, tx));
+    let mut recv_closed = false;
 
     let status = timeout(exec_timeout, async {
         loop {
             tokio::select! {
-                stream_result = rx.recv() => {
+                stream_result = rx.recv(), if !recv_closed => {
                     match stream_result {
                         Some(StreamResult::Exceeded(kind)) => {
                             child.kill().await.with_context(|| {
@@ -298,8 +299,10 @@ async fn run_process(
                             })?;
                         }
                         // Reader tasks finished (EOF): this is expected for short-lived commands.
-                        // Keep waiting for child completion instead of turning it into an internal error.
-                        None => {}
+                        // Stop polling the channel to avoid busy-looping on repeated `None`.
+                        None => {
+                            recv_closed = true;
+                        }
                     }
                 }
                 status = child.wait() => {

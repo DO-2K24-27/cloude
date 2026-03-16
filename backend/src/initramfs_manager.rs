@@ -29,6 +29,7 @@ impl InitramfsLanguage {
         self,
         agent_binary: &str,
         init_script: &str,
+        initramfs_dir: &str,
     ) -> impl Future<Output = Result<(), Error>> + Send {
         async move {
             let InitramfsLanguage {
@@ -43,20 +44,20 @@ impl InitramfsLanguage {
             );
 
             let (tmp_dir, out_path, out_file, current_filename, current_prefix) =
-                Self::prepare_paths(&name, &version)?;
+                Self::prepare_paths(initramfs_dir, &name, &version)?;
 
             // Skip rebuild if existing non-empty file is present, but still cleanup old versions.
             if let Ok(meta) = fs::metadata(&out_path) {
                 if meta.len() > 0 {
-                    if Self::should_rebuild(&out_path, agent_binary, init_script)? {
+                    if Self::should_rebuild(&out_path, agent_binary, init_script, &base_image)? {
                         let _ = fs::remove_file(&out_path);
                     } else {
-                    Self::cleanup_old_versions(
-                        tmp_dir.as_str(),
-                        &current_prefix,
-                        &current_filename,
-                    )?;
-                    return Ok(());
+                        Self::cleanup_old_versions(
+                            tmp_dir.as_str(),
+                            &current_prefix,
+                            &current_filename,
+                        )?;
+                        return Ok(());
                     }
                 } else {
                     let _ = fs::remove_file(&out_path);
@@ -76,6 +77,8 @@ impl InitramfsLanguage {
                 ));
             }
 
+            Self::write_build_metadata(&out_path, &base_image)?;
+
             Self::cleanup_old_versions(tmp_dir.as_str(), &current_prefix, &current_filename)?;
 
             Ok(())
@@ -83,10 +86,11 @@ impl InitramfsLanguage {
     }
 
     fn prepare_paths(
+        initramfs_dir: &str,
         name: &str,
         version: &str,
     ) -> Result<(String, PathBuf, String, String, String), Error> {
-        let tmp_dir = "tmp".to_string();
+        let tmp_dir = initramfs_dir.to_string();
         fs::create_dir_all(&tmp_dir).map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
         let out_path = PathBuf::from(&tmp_dir).join(format!("{name}-{version}.cpio.gz"));
         let out_file = out_path.to_string_lossy().to_string();
@@ -151,7 +155,12 @@ impl InitramfsLanguage {
         Ok(())
     }
 
-    fn should_rebuild(out_path: &Path, agent_binary: &str, init_script: &str) -> Result<bool, Error> {
+    fn should_rebuild(
+        out_path: &Path,
+        agent_binary: &str,
+        init_script: &str,
+        base_image: &str,
+    ) -> Result<bool, Error> {
         let out_mtime = fs::metadata(out_path)
             .and_then(|m| m.modified())
             .map_err(|e| Error::new(ErrorKind::Other, format!("failed to stat {}: {}", out_path.display(), e)))?;
@@ -164,7 +173,37 @@ impl InitramfsLanguage {
             .and_then(|m| m.modified())
             .map_err(|e| Error::new(ErrorKind::Other, format!("failed to stat init script '{}': {}", init_script, e)))?;
 
-        Ok(agent_mtime > out_mtime || init_mtime > out_mtime)
+        let image_mismatch = match Self::read_build_metadata(out_path) {
+            Ok(Some(previous_base_image)) => previous_base_image != base_image,
+            Ok(None) => true,
+            Err(e) => {
+                return Err(Error::new(
+                    ErrorKind::Other,
+                    format!("failed to read build metadata for {}: {}", out_path.display(), e),
+                ));
+            }
+        };
+
+        Ok(agent_mtime > out_mtime || init_mtime > out_mtime || image_mismatch)
+    }
+
+    fn metadata_path(out_path: &Path) -> PathBuf {
+        PathBuf::from(format!("{}.meta", out_path.display()))
+    }
+
+    fn read_build_metadata(out_path: &Path) -> Result<Option<String>, std::io::Error> {
+        let metadata_path = Self::metadata_path(out_path);
+        match fs::read_to_string(metadata_path) {
+            Ok(content) => Ok(Some(content.trim().to_string())),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn write_build_metadata(out_path: &Path, base_image: &str) -> Result<(), Error> {
+        let metadata_path = Self::metadata_path(out_path);
+        fs::write(metadata_path, format!("{}\n", base_image))
+            .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))
     }
 }
 

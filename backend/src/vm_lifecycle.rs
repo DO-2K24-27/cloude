@@ -254,13 +254,20 @@ impl VmHandle {
 
         info!(vm_id = %vm_id, "Network setup complete");
 
+        let vmm_stop = if let Some(handle) = vmm_stop_handle {
+            handle
+        } else {
+            warn!(vm_id = %vm_id, "Missing VMM stop handle; using disconnected fallback sentinel");
+            Arc::new(std::sync::atomic::AtomicBool::new(false))
+        };
+
         let mut handle = VmHandle {
             vm_id: vm_id.clone(),
             ip: ip_addr,
             tap_device,
             vm_thread: Some(vm_thread),
             vm_running,
-            vmm_stop: vmm_stop_handle.unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicBool::new(false))),
+            vmm_stop,
             ip_manager,
         };
 
@@ -281,7 +288,7 @@ impl VmHandle {
         let prefix = format!("{}-", language);
         let mut candidate: Option<PathBuf> = None;
 
-        let entries = std::fs::read_dir(&config.initramfs_dir).map_err(|e| {
+        let mut entries = tokio::fs::read_dir(&config.initramfs_dir).await.map_err(|e| {
             VmError::InitramfsBuild(format!(
                 "Failed to read initramfs dir '{}': {}",
                 config.initramfs_dir.display(),
@@ -289,9 +296,19 @@ impl VmHandle {
             ))
         })?;
 
-        for entry in entries.flatten() {
+        while let Some(entry) = entries.next_entry().await.map_err(|e| {
+            VmError::InitramfsBuild(format!(
+                "Failed to scan initramfs dir '{}': {}",
+                config.initramfs_dir.display(),
+                e
+            ))
+        })? {
             let path = entry.path();
-            if !path.is_file() {
+            let is_file = tokio::fs::metadata(&path)
+                .await
+                .map(|m| m.is_file())
+                .unwrap_or(false);
+            if !is_file {
                 continue;
             }
 
@@ -300,7 +317,8 @@ impl VmHandle {
             };
 
             if name.starts_with(&prefix) && name.ends_with(".cpio.gz") {
-                let is_non_empty = std::fs::metadata(&path)
+                let is_non_empty = tokio::fs::metadata(&path)
+                    .await
                     .map(|m| m.len() > 0)
                     .unwrap_or(false);
                 if is_non_empty {
@@ -334,12 +352,14 @@ impl VmHandle {
 
         let agent_health_url = format!("{}/health", self.agent_url().trim_end_matches('/'));
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(2))
+            .timeout(Duration::from_millis(500))
             .build()
             .map_err(|_e| VmError::AgentTimeout)?;
 
-        // Try for up to 30 seconds
-        for attempt in 1..=300 {
+        // Try for up to 30 seconds (wall clock)
+        let start = std::time::Instant::now();
+        let mut attempt = 1_u32;
+        while start.elapsed() < Duration::from_secs(30) {
             if !self.vm_running.load(Ordering::SeqCst) {
                 error!(
                     vm_id = %self.vm_id,
@@ -366,6 +386,7 @@ impl VmHandle {
             }
 
             tokio::time::sleep(Duration::from_millis(100)).await;
+            attempt += 1;
         }
 
         error!(vm_id = %self.vm_id, "Agent did not become ready in time");

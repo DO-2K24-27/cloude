@@ -16,7 +16,8 @@ You also need a VM kernel file at `backend/vmlinux`.
 From repository root:
 
 ```bash
-cargo build -p backend -p cli -p agent --target x86_64-unknown-linux-musl && \
+cargo build -p backend -p cli && \
+cargo build -p agent --target x86_64-unknown-linux-musl && \
 cp ./target/x86_64-unknown-linux-musl/debug/agent ./backend/cloude-agentd && \
 chmod +x ./backend/cloude-agentd
 ```
