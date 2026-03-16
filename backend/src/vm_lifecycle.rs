@@ -118,9 +118,8 @@ impl VmHandle {
         }
 
         // Step 4: Spawn VMM in a dedicated thread
-        let (startup_tx, startup_rx) = std::sync::mpsc::channel::<VmError>();
-        let (stop_handle_tx, stop_handle_rx) =
-            std::sync::mpsc::channel::<Arc<std::sync::atomic::AtomicBool>>();
+        let (vm_setup_tx, vm_setup_rx) =
+            std::sync::mpsc::channel::<Result<Arc<std::sync::atomic::AtomicBool>, VmError>>();
 
         let kernel_path = config.kernel_path.clone();
         let tap_device_clone = tap_device.clone();
@@ -146,13 +145,11 @@ impl VmHandle {
             let mut vmm = match vmm::VMM::new(stdin, stdout, memory_size) {
                 Ok(v) => v,
                 Err(e) => {
-                    let _ = startup_tx.send(VmError::VmmCreation(format!("{:?}", e)));
+                    let _ = vm_setup_tx.send(Err(VmError::VmmCreation(format!("{:?}", e))));
                     error!("Failed to create VMM: {:?}", e);
                     return;
                 }
             };
-
-            let _ = stop_handle_tx.send(vmm.stop_handle());
 
             // Add network device (this creates the tap device)
             if let Err(e) = vmm.add_net_device(
@@ -162,7 +159,7 @@ impl VmHandle {
                 Some(netmask),
             ) {
                 error!("Failed to add network device: {:?}", e);
-                let _ = startup_tx.send(VmError::NetworkSetup(format!("{:?}", e)));
+                let _ = vm_setup_tx.send(Err(VmError::NetworkSetup(format!("{:?}", e))));
                 return;
             }
 
@@ -176,11 +173,14 @@ impl VmHandle {
                 None,
             ) {
                 error!("Failed to configure VMM: {:?}", e);
-                let _ = startup_tx.send(VmError::VmmConfiguration(format!("{:?}", e)));
+                let _ = vm_setup_tx.send(Err(VmError::VmmConfiguration(format!("{:?}", e))));
                 return;
             }
 
             info!("VMM configured, starting vCPUs");
+
+            // Send signal that VMM was fully setup before running
+            let _ = vm_setup_tx.send(Ok(vmm.stop_handle()));
 
             // Run VMM (this blocks until VM stops)
             vmm.run();
@@ -189,66 +189,25 @@ impl VmHandle {
         });
 
         // Step 5: Wait for tap device to be created
-        info!(vm_id = %vm_id, "Waiting for tap device to be created");
-        let tap_path = format!("/sys/class/net/{}", tap_device);
-        let max_wait = Duration::from_secs(10);
-        let start = std::time::Instant::now();
-        let mut vmm_stop_handle: Option<Arc<std::sync::atomic::AtomicBool>> = None;
-
-        loop {
-            if vmm_stop_handle.is_none() {
-                if let Ok(handle) = stop_handle_rx.try_recv() {
-                    vmm_stop_handle = Some(handle);
-                }
-            }
-
-            match startup_rx.try_recv() {
-                Ok(vm_err) => {
-                    let _ = Self::release_ip_internal(&vm_id, &ip_manager);
-                    return Err(vm_err);
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    if vm_thread.is_finished() {
-                        let _ = Self::release_ip_internal(&vm_id, &ip_manager);
-                        return Err(VmError::VmmCreation(
-                            "VM thread exited during startup".to_string(),
-                        ));
-                    }
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            }
-
-            if tokio::fs::metadata(&tap_path).await.is_ok() {
-                if vmm_stop_handle.is_none() {
-                    match stop_handle_rx.try_recv() {
-                        Ok(handle) => vmm_stop_handle = Some(handle),
-                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                            let _ = Self::release_ip_internal(&vm_id, &ip_manager);
-                            return Err(VmError::VmmCreation(
-                                "Missing VMM stop handle during startup".to_string(),
-                            ));
-                        }
-                        Err(std::sync::mpsc::TryRecvError::Empty) => {
-                            tokio::time::sleep(Duration::from_millis(10)).await;
-                            continue;
-                        }
-                    }
-                }
-                info!(vm_id = %vm_id, tap = %tap_device, "Tap device created");
-                break;
-            }
-
-            if start.elapsed() >= max_wait {
-                error!(vm_id = %vm_id, tap = %tap_device, "Tap device not created within timeout");
+        let vmm_stop = match vm_setup_rx.recv() {
+            Ok(Err(vm_err)) => {
                 let _ = Self::release_ip_internal(&vm_id, &ip_manager);
-                return Err(VmError::NetworkSetup(format!(
-                    "Tap device {} not created within {:?}",
-                    tap_device, max_wait
-                )));
+                return Err(vm_err);
             }
-
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+            Ok(Ok(handle)) => handle,
+            Err(std::sync::mpsc::RecvError) => {
+                if vm_thread.is_finished() {
+                    let _ = Self::release_ip_internal(&vm_id, &ip_manager);
+                    return Err(VmError::VmmCreation(
+                        "VM thread exited during startup".to_string(),
+                    ));
+                }
+                let _ = Self::release_ip_internal(&vm_id, &ip_manager);
+                return Err(VmError::VmmCreation(
+                    "Missing VMM stop handle during startup".to_string(),
+                ));
+            }
+        };
 
         // Step 6: Attach tap to bridge
         if let Err(e) = virt::network::setup_guest_iface(&tap_device, &config.bridge_name).await {
@@ -258,13 +217,6 @@ impl VmHandle {
         }
 
         info!(vm_id = %vm_id, "Network setup complete");
-
-        let Some(vmm_stop) = vmm_stop_handle else {
-            let _ = Self::release_ip_internal(&vm_id, &ip_manager);
-            return Err(VmError::VmmCreation(
-                "Missing VMM stop handle after startup".to_string(),
-            ));
-        };
 
         let mut handle = VmHandle {
             vm_id: vm_id.clone(),
