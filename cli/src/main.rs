@@ -118,13 +118,48 @@ async fn cmd_go(
     }
 
     let run: RunResponse = resp.json().await?;
-    println!("Job submitted successfully!");
-    println!("  ID: {}", run.id);
-    println!("\nCheck the result with:\n  cloude status {}", run.id);
-    Ok(())
+    let job_id = run.id.clone();
+
+    loop {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        let status_url = format!("{backend}/status/{job_id}");
+        let status_resp = client.get(&status_url).send().await?;
+
+        if !status_resp.status().is_success() {
+            let status = status_resp.status();
+            let err: ErrorBody = status_resp
+                .json()
+                .await
+                .unwrap_or(ErrorBody {
+                    error: format!("HTTP {status}"),
+                });
+            return Err(format!("Backend error (HTTP {status}): {}", err.error).into());
+        }
+
+        let st: StatusResponse = status_resp.json().await?;
+
+        if st.status == "done" || st.status == "error" {
+            println!("Status: {}", st.status);
+            if let Some(code) = st.exit_code {
+                println!("Exit code: {code}");
+            }
+            if let Some(ref out) = st.stdout {
+                if !out.is_empty() {
+                    println!("{out}");
+                }
+            }
+            if let Some(ref err) = st.stderr {
+                if !err.is_empty() {
+                    println!("{err}");
+                }
+            }
+            return Ok(());
+        }
+    }
 }
 
-// ── status: poll job result ─────────────────────────────────────────
+// ── status: query job result ────────────────────────────────────────
 
 async fn cmd_status(
     client: &reqwest::Client,
@@ -144,21 +179,10 @@ async fn cmd_status(
 
     let st: StatusResponse = resp.json().await?;
 
-    println!("Job {}", st.id);
-    println!("  Status: {}", st.status);
-
+    println!("Job ID: {}", st.id);
+    println!("Status: {}", st.status);
     if let Some(code) = st.exit_code {
-        println!("  Exit code: {code}");
-    }
-    if let Some(ref out) = st.stdout {
-        if !out.is_empty() {
-            println!("  ── stdout ──\n{out}");
-        }
-    }
-    if let Some(ref err) = st.stderr {
-        if !err.is_empty() {
-            println!("  ── stderr ──\n{err}");
-        }
+        println!("Exit code: {code}");
     }
     Ok(())
 }
