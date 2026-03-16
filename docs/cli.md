@@ -25,25 +25,4 @@ The CLI supports all languages available in the backend, including:
 
 ## Usage Examples
 
-### Submit a Job
-
-```bash
-cargo run -p cli -- go --language python --file agent/examples/hello.py
-```
-
-### Check Job Status
-
-```bash
-cargo run -p cli -- status <job_id>
-```
-
-### Using a Remote Backend
-
-```bash
-cargo run -p cli -- --backend-url http://<BACKEND_IP>:8080 go --language python --file agent/examples/hello.py
-```
-
-## Code Structure
-
-- `src/main.rs`: Entry point for the CLI, handles command parsing and execution.
-- `examples/mock_backend.rs`: Example implementation of a mock backend for testing.
+Refer to the [QUICKSTART](../QUICKSTART.md) guide for getting started.
