@@ -194,13 +194,6 @@ threads. Setting it to `false` requests a graceful shutdown.
 
 You can look at `backend/virt/src/bin/run_vm.rs` for an example
 
-## Runtime behavior
-
-- vCPU threads run while internal `running == true`.
-- `run()` executes the event loop and joins vCPU threads at shutdown.
-- SIGUSR1 is used internally to interrupt threads blocked in `KVM_RUN` during
-	shutdown.
-
 ## Debugging notes
 
 - Guest serial output destination is chosen by the caller.
