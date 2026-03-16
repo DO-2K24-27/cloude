@@ -137,7 +137,7 @@ The CLI is only used when the user needs it.
 
 Below is the sequence diagram illustrating the end-to-end flow of a request in the Cloude system:
 
-![alt text](image.png)
+![alt text](docs/assets/image.png)
 
 This diagram provides a high-level overview of how a job request flows through the system, from submission to execution and result retrieval.
 
