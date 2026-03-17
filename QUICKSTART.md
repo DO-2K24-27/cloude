@@ -27,7 +27,7 @@ This will:
 
 ## 2) Start backend (terminal A)
 
-From repository root:
+Run backend as root from its project folder:
 
 ```bash
 cargo xtask run-backend

@@ -108,8 +108,7 @@ async fn main() -> Result<(), std::io::Error> {
         env::var("AGENT_BINARY_PATH").unwrap_or_else(|_| "./cloude-agentd".to_string());
 
     let init_script = env::var("INIT_SCRIPT_PATH").unwrap_or_else(|_| "./init.sh".to_string());
-    let vm_initramfs_dir =
-        env::var("VM_INITRAMFS_DIR").unwrap_or_else(|_| "./tmp".to_string());
+    let vm_initramfs_dir = env::var("VM_INITRAMFS_DIR").unwrap_or_else(|_| "./tmp".to_string());
 
     let available_languages: Vec<backend::initramfs_manager::InitramfsLanguage> =
         get_languages_config(&languages_config_path)?;
@@ -131,7 +130,6 @@ async fn main() -> Result<(), std::io::Error> {
             })?;
     }
 
-    // 39 is miku
     let ip_range: Ipv4Addr = env::var("IP_RANGE")
         .as_deref()
         .unwrap_or_else(|_| "10.39.1.0")
@@ -162,11 +160,6 @@ async fn main() -> Result<(), std::io::Error> {
         ));
     }
 
-    // NOTE, DO NOT MERGE UNTIL REMOVAL OF THIS COMMENT:
-    // I think using TWO WHOLE crates only to create the interface and tell it to do postrouting/ip forwarding may be a lot.
-    // An alternative would be to use ioctl (?) or just run a command.
-    // Please give me feedback, this is making me go crazy.
-
     // Set up the bridge and NAT rules
     let host_ip: Ipv4Addr = (ip_range.to_bits() + 1).into();
     if let Err(e) = setup_bridge(bridge_name.clone(), host_ip, ip_mask).await {
@@ -191,8 +184,7 @@ async fn main() -> Result<(), std::io::Error> {
         .build()
         .expect("Failed to build HTTP client");
 
-    let vm_kernel_path =
-        env::var("VM_KERNEL_PATH").unwrap_or_else(|_| "./vmlinux".to_string());
+    let vm_kernel_path = env::var("VM_KERNEL_PATH").unwrap_or_else(|_| "./vmlinux".to_string());
     let vm_log_guest_console = env::var("VM_LOG_GUEST_CONSOLE")
         .map(|v| {
             let normalized = v.trim().to_ascii_lowercase();
@@ -216,13 +208,19 @@ async fn main() -> Result<(), std::io::Error> {
     let host_space = 1_u32.checked_shl(host_bits).ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            format!("Failed to compute host address space from IP_MASK={}", ip_mask),
+            format!(
+                "Failed to compute host address space from IP_MASK={}",
+                ip_mask
+            ),
         )
     })?;
     let broadcast_offset = host_space.checked_sub(1).ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            format!("Failed to compute broadcast offset from IP_MASK={}", ip_mask),
+            format!(
+                "Failed to compute broadcast offset from IP_MASK={}",
+                ip_mask
+            ),
         )
     })?;
     let ip_range_u32 = u32::from(ip_range);

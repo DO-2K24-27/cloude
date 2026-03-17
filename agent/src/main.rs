@@ -66,8 +66,7 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    let server_addr =
-        env::var("AGENT_SERVER_ADDR").unwrap_or_else(|_| "0.0.0.0:3001".to_string());
+    let server_addr = env::var("AGENT_SERVER_ADDR").unwrap_or_else(|_| "0.0.0.0:3001".to_string());
     let work_dir = resolve_work_dir(PathBuf::from(
         env::var("AGENT_WORK_DIR").unwrap_or_else(|_| "build".to_string()),
     ))?;
