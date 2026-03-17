@@ -21,10 +21,7 @@ sudo apt install nftables
 From root repository, execute the following command in root mode:
 
 ```bash
-rustup target add x86_64-unknown-linux-musl
-cargo build -p backend -p agent --target x86_64-unknown-linux-musl
-cp ./target/x86_64-unknown-linux-musl/debug/agent ./backend/cloude-agentd
-chmod +x ./backend/cloude-agentd
+cargo xtask build
 ```
 
 Why musl: runtime initramfs images are Alpine-based, so a glibc-linked agent (`./target/debug/agent`) fails at boot with `/usr/bin/cloude-agentd: not found`. The musl build is static and runs correctly in Alpine initramfs.
@@ -34,24 +31,20 @@ Why musl: runtime initramfs images are Alpine-based, so a glibc-linked agent (`.
 From root repository, execute the following command in root mode:
 
 ```bash
-cd backend
-sudo env \
-  PATH="/usr/sbin:$PATH" \
-  LANGUAGES_CONFIG_PATH=./config/languages.json \
-  AGENT_BINARY_PATH=./cloude-agentd \
-  INIT_SCRIPT_PATH=./init.sh \
-  VM_KERNEL_PATH=./vmlinux \
-  VM_INITRAMFS_DIR=./tmp \
-  VM_LOG_GUEST_CONSOLE=false \
-  ../target/debug/backend
+cargo xtask run-backend
 ```
 
-Expected output:
-```
+To enable verbose VM guest console logging, add `VM_LOG_GUEST_CONSOLE=true` to the `backend/.env` file.
+
+Expected log:
+
+```text
 INFO backend: Starting Backend server on 127.0.0.1:8080
 ```
 
 ## Environment variables
+
+Configuration is read from `backend/.env` (create from `.env.exemple` if needed).
 
 ### Required in practice
 
